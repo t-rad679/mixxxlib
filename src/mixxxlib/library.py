@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sqlite3
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import closing, contextmanager
+from pathlib import Path
 from typing import Any
 
 from mixxxlib import __version__, doctor as doctor_mod, paths as paths_mod
 from mixxxlib.db import connection as conn_mod, crates as crates_sql, schema as schema_mod, tracks as tracks_sql
-from mixxxlib.errors import ValidationError
-from mixxxlib.model import Crate, CrateNode, Finding, MutationResult, SchemaInfo, Track, WarningMessage
+from mixxxlib.errors import DatabaseError, NotFoundError, ValidationError
+from mixxxlib.model import BackupEntry, Crate, CrateNode, Finding, MutationResult, SchemaInfo, Track, WarningMessage
 from mixxxlib.safety import backup as backup_mod
-from mixxxlib.safety.guard import mixxx_process_running
+from mixxxlib.safety.guard import assert_mixxx_closed, mixxx_process_running
 from mixxxlib.settings import load_mixxx_cfg
 
 
@@ -30,6 +32,7 @@ class Library:
             self.schema: SchemaInfo = schema_mod.schema_info(conn, ceiling=schema_ceiling)
         self.crates = CratesAPI(self)
         self.tracks = TracksAPI(self)
+        self.backups = BackupsAPI(self)
 
     @classmethod
     def open(cls, settings_path: str | None = None, db: str | None = None, backup_dir: str | None = None, *,
@@ -215,3 +218,60 @@ class TracksAPI:
     def resolve(self, selectors: Iterable[str], *, paths: bool, missing_error=ValidationError) -> list[int]:
         with self._lib.read() as conn:
             return tracks_sql.resolve_track_ids(conn, selectors, paths=paths, missing_error=missing_error)
+
+
+class BackupsAPI:
+    def __init__(self, lib: Library) -> None:
+        self._lib = lib
+
+    def list(self) -> list[BackupEntry]:
+        return backup_mod.list_backups(self._lib.paths.backup_dir)
+
+    def create(self, label: str | None = None) -> Path:
+        with closing(conn_mod.open_rw(self._lib.paths.db)) as conn, conn_mod.translating_errors():
+            return backup_mod.create_backup(conn, self._lib.paths.backup_dir, label or "backup create")
+
+    def prune(self) -> list[Path]:
+        return backup_mod.prune(self._lib.paths.backup_dir, self._lib.retention)
+
+    def restore(self, candidate: Path) -> dict[str, Any]:
+        """Full mutation guard, back up the current database, verify the candidate, copy it into place.
+
+        Order matters: the candidate is opened read-only and put through PRAGMA integrity_check and a
+        schema-version read *before* anything about the live database is touched. Only once that has
+        passed do we take a safety backup of the live database and then swap the candidate into place
+        via a same-directory staging file + atomic os.replace, so a crash mid-copy can never leave a
+        half-written mixxxdb.sqlite.
+        """
+        candidate = Path(candidate)
+        if not candidate.is_file():
+            raise NotFoundError(f"backup file not found at {candidate}", path=str(candidate))
+        try:
+            with closing(sqlite3.connect(f"{candidate.resolve().as_uri()}?mode=ro", uri=True)) as check:
+                result = conn_mod.integrity_check(check)
+                version = schema_mod.read_schema_version(check)
+        except sqlite3.Error as exc:
+            raise DatabaseError(f"candidate is not a readable Mixxx database: {exc}", path=str(candidate)) from exc
+        if result != "ok":
+            raise DatabaseError(f"candidate failed integrity_check: {result}", path=str(candidate), integrity=result)
+        if version is None:
+            raise DatabaseError("candidate has no mixxx.schema.version row", path=str(candidate))
+        db = self._lib.paths.db
+        with closing(conn_mod.open_rw(db)) as conn, conn_mod.translating_errors():
+            assert_mixxx_closed(conn, process_check=self._lib._process_check)
+            pre = backup_mod.create_backup(conn, self._lib.paths.backup_dir, "backup restore")
+        staging = db.with_name(db.name + ".mixxxlib-restore")
+        try:
+            shutil.copyfile(candidate, staging)
+            os.replace(staging, db)
+        except OSError as exc:
+            raise DatabaseError(f"failed to install the restored database: {exc}", path=str(candidate),
+                                backup=str(pre)) from exc
+        finally:
+            staging.unlink(missing_ok=True)
+        journal = db.with_name(db.name + "-journal")
+        if journal.exists():
+            journal.unlink()
+        with closing(conn_mod.open_ro(db)) as verify:
+            integrity = conn_mod.integrity_check(verify)
+        return {"restored_from": str(candidate), "backup": str(pre), "integrity": integrity}
