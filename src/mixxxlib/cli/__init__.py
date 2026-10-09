@@ -10,10 +10,12 @@ from typing import Annotated, Optional
 import typer
 # Typer 0.27 vendors its own Click fork (`typer._click`) rather than using the top-level `click`
 # package at runtime: exceptions raised during argument parsing/invocation under
-# `standalone_mode=False` are instances of *this* module's classes, not `click.*`. Catching the
-# real `click` exceptions here would silently miss every one of them (verified on this machine).
-from typer._click import exceptions as click_exceptions
-
+# `standalone_mode=False` are instances of that fork's classes, not `click.*` (verified on this
+# machine: `click.UsageError` catches none of them). `typer.TyperException` is the public base
+# every one of those (`UsageError`, `NoArgsIsHelpError`, `BadOptionUsage`, `NoSuchOption`, ...)
+# shares, and it already carries `.exit_code`/`.format_message()` — no need to reach into the
+# private `typer._click` module at all. `typer.Exit` and `typer.Abort` are *not*
+# `TyperException` subclasses (verified) and are handled separately below.
 from mixxxlib import __version__
 from mixxxlib.cli import info as info_cmd, settings as settings_cmd
 from mixxxlib.cli.common import Globals, emit_error
@@ -59,11 +61,11 @@ def main(argv: list[str] | None = None) -> int:
     surfaces as `app(...)`'s *return value*, not as a raised exception — so a plain `None`/non-int
     return means success (exit 0) and an int return is the exit code to use directly.
 
-    A `typer._click.exceptions.ClickException` (covers `UsageError`, `NoArgsIsHelpError`,
-    `BadOptionUsage`, `NoSuchOption`, ...) is re-raised instead, because it happens during argument
-    parsing, before any of our own commands run — this is Click's own usage-error path, so its
-    `exit_code` (2 for the `UsageError` family, matching spec §4's "Click's default") is used as-is
-    rather than remapped.
+    A `typer.TyperException` (covers `UsageError`, `NoArgsIsHelpError`, `BadOptionUsage`,
+    `NoSuchOption`, ...) is re-raised instead, because it happens during argument parsing, before
+    any of our own commands run — this is Click's own usage-error path, so its `exit_code` (2 for
+    the `UsageError` family, matching spec §4's "Click's default"; the `TyperException` base
+    default is 1) is used as-is rather than remapped.
     """
     args = list(sys.argv[1:] if argv is None else argv)
     json_mode = "--json" in args
@@ -71,9 +73,9 @@ def main(argv: list[str] | None = None) -> int:
         rv = app(args=args, standalone_mode=False, prog_name="mixxxlib")
     except typer.Abort:
         return 1
-    except click_exceptions.ClickException as exc:
+    except typer.TyperException as exc:
         if json_mode:
-            err_cls = UsageError if isinstance(exc, click_exceptions.UsageError) else InternalError
+            err_cls = UsageError if exc.exit_code == 2 else InternalError
             emit_error(err_cls(exc.format_message()), True)
         else:
             exc.show()

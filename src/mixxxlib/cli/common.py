@@ -15,9 +15,10 @@ from typing import Annotated, Any, Optional
 import typer
 # See the matching comment in cli/__init__.py: Typer 0.27 vendors its own Click fork, so a usage
 # error escaping a command body (none currently raise one directly, but a future command might)
-# is an instance of *this* module's `ClickException`, not the top-level `click` package's.
-from typer._click import exceptions as click_exceptions
-
+# would be an instance of that fork's classes, not the top-level `click` package's. The public
+# `typer.TyperException` base covers all of them, so catch that rather than reaching into the
+# private `typer._click` module. `typer.Exit`/`typer.Abort` are not `TyperException` subclasses
+# and are caught separately.
 from mixxxlib import output
 from mixxxlib.errors import ConfirmationRequiredError, InternalError, MixxxlibError, ValidationError
 from mixxxlib.library import Library
@@ -133,7 +134,7 @@ def command(ctx: typer.Context, name: str) -> Iterator[Emitter]:
     except MixxxlibError as err:
         emit_error(err, json_mode)
         raise typer.Exit(err.exit_code) from None
-    except (typer.Exit, typer.Abort, click_exceptions.ClickException):
+    except (typer.Exit, typer.Abort, typer.TyperException):
         raise
     except Exception as exc:  # exit 1: always a bug
         if os.environ.get("MIXXXLIB_DEBUG"):

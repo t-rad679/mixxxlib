@@ -75,14 +75,16 @@ def test_settings_show_without_cfg_is_exit_3(sandbox):
 
 def test_no_args_prints_help_cleanly_no_traceback():
     r = run_cli()
-    assert r.code != -1
+    assert r.code == 2
+    assert r.stdout == ""
     assert "Traceback" not in r.stdout and "Traceback" not in r.stderr
-    assert "Usage:" in r.stdout or "Usage:" in r.stderr
+    assert "Usage:" in r.stderr
 
 
 def test_malformed_invocation_is_exit_2_no_traceback(sandbox):
     r = sandbox.run("bogus-command")
     assert r.code == 2
+    assert r.stdout == ""
     assert "Traceback" not in r.stdout and "Traceback" not in r.stderr
 
 
