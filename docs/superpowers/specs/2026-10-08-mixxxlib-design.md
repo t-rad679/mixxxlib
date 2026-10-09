@@ -1,14 +1,16 @@
-# mixxxctl — design spec
+# mixxxlib — design spec
 
 **Date:** 2026-10-08, revised 2026-10-09
-**Status:** draft for review (revision 3)
-**Sources:** the Trilium note tree under *mixxxctl* (*Initial mixxxctl Brainstorm*, *mixxxctl Interface Contract*, *Testing mixxxctl Against Real Mixxx*, *Driving Mixxx While It Is Running*, *Mixxx Has No Nested Crates*, *CLI Library Choice: absl-py vs Typer*), the linked *Beats Blob Decoder* component note, and the review notes on revision 1. Facts marked **[verified]** in those notes were measured against a Mixxx 2.5.6 library at schema 39 on 2026-10-08; nothing measured there is treated as an invariant of Mixxx in general. Upstream facts about nested crates were read from the Mixxx GitHub repository on 2026-10-09.
+**Status:** draft for review (revision 4)
+**Sources:** the Trilium note tree under *mixxxlib* (*Initial mixxxlib Brainstorm*, *mixxxlib Interface Contract*, *Testing mixxxlib Against Real Mixxx*, *Driving Mixxx While It Is Running*, *Mixxx Has No Nested Crates*, *CLI Library Choice: absl-py vs Typer*), the linked *Beats Blob Decoder* component note, and the review notes on revision 1. Facts marked **[verified]** in those notes were measured against a Mixxx 2.5.6 library at schema 39 on 2026-10-08; nothing measured there is treated as an invariant of Mixxx in general. Upstream facts about nested crates were read from the Mixxx GitHub repository on 2026-10-09.
 
 ## 1. Purpose
 
-`mixxxctl` is a deterministic, offline command-line tool and Python library for reading and writing a Mixxx library: the `mixxxdb.sqlite` database and the audio files' tags. It is consumed by programs first and people second. It holds no opinion about what any value means, never runs while Mixxx is running, and must never break the Mixxx database.
+`mixxxlib` is a deterministic, offline command-line tool and Python library for reading and writing a Mixxx library: the `mixxxdb.sqlite` database and the audio files' tags. It is consumed by programs first and people second. It holds no opinion about what any value means, never runs while Mixxx is running, and must never break the Mixxx database.
 
 It fills a real gap: Mixxx 2.5.6 ships no library CLI at all, and existing third-party tools are narrow, read-mostly, and unmaintained.
+
+**Name.** The tool is `mixxxlib`, not `mixxxctl`. The `ctl` suffix (systemctl, kubectl) means controlling a running process, which is the one thing this tool refuses to do; the name says what it touches instead. `mixxxctl` is left free for a future live-control sibling over virtual MIDI, which is the opposite contract (§1.1). The package, the import name, the command, the zipapp, the data directory (`~/.local/share/mixxxlib`) and the environment variables (`MIXXXLIB_*`) all share the one word.
 
 ### 1.1 Scope
 
@@ -44,7 +46,7 @@ These apply to every command and every library call.
 2. **Stable exit codes and machine-parseable errors** (§4). A caller branches on the code, never on prose.
 3. **Never prompt, never require a TTY.** Anything that blocks waiting for a human is a bug.
 4. **Destructive operations require `--yes`.** `--dry-run` prints the exact SQL statements and file operations and makes no change. Dry-run is never the default.
-5. **Single-purpose, composable commands.** The caller sequences and compensates; `mixxxctl` never orchestrates multi-step workflows.
+5. **Single-purpose, composable commands.** The caller sequences and compensates; `mixxxlib` never orchestrates multi-step workflows.
 6. **Importable as a library.** All business logic is callable without the CLI layer, and importing the package registers nothing global.
 7. **No semantics, only mechanism.** Values are validated for type, range and referential sanity, then written opaquely.
 8. **No hardcoded paths, no assumptions about library content** — not the music root, not file formats, not which Mixxx features are in use.
@@ -57,10 +59,10 @@ These apply to every command and every library call.
 - **Typer** for the CLI. Decided. Subcommands are functions with typed parameters and nothing is process-global, which is what makes constraint 6 achievable. `absl-py` was rejected because its flags are global mutable state that would leak into any importer.
 - **Runtime dependencies:** `typer`, `mutagen`. Nothing else. No `protobuf`, no ORM, no `rich`-dependent output.
 - **Dev dependencies:** `pytest`, `shiv`.
-- **Packaging:** a standard `pyproject.toml` with a `mixxxctl` console script and `python -m mixxxctl` entry point, `src/` layout. The developer install is `python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`. No lockfile tooling is required.
-- **Distribution artifact: a single-file zipapp.** `scripts/build-zipapp.sh` runs `shiv -c mixxxctl -o dist/mixxxctl .`, producing one executable file that bundles the package, Typer and mutagen behind a `#!/usr/bin/env python3` shebang. The user copies it anywhere on `PATH`, marks it executable and runs `mixxxctl …` like a binary; the only thing the target machine needs is Python ≥ 3.12. Both dependencies are pure Python, so one build serves every platform. On first run shiv unpacks the bundle into `~/.shiv/` and reuses it afterwards; `dist/` is git-ignored. A true interpreter-embedding binary (PyInstaller, Nuitka) is deliberately not built: it would need one build per OS and architecture for a gain that only matters on a machine with no Python at all.
+- **Packaging:** a standard `pyproject.toml` with a `mixxxlib` console script and `python -m mixxxlib` entry point, `src/` layout. The developer install is `python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`. No lockfile tooling is required.
+- **Distribution artifact: a single-file zipapp.** `scripts/build-zipapp.sh` runs `shiv -c mixxxlib -o dist/mixxxlib .`, producing one executable file that bundles the package, Typer and mutagen behind a `#!/usr/bin/env python3` shebang. The user copies it anywhere on `PATH`, marks it executable and runs `mixxxlib …` like a binary; the only thing the target machine needs is Python ≥ 3.12. Both dependencies are pure Python, so one build serves every platform. On first run shiv unpacks the bundle into `~/.shiv/` and reuses it afterwards; `dist/` is git-ignored. A true interpreter-embedding binary (PyInstaller, Nuitka) is deliberately not built: it would need one build per OS and architecture for a gain that only matters on a machine with no Python at all.
 - **Distribution target:** someone either downloads the zipapp or checks out the repo and builds it, then uses it against their own Mixxx install. A README is required (§11). No badges, CI matrix or contribution apparatus.
-- **Schema reference, not vendored.** Mixxx's `res/schema.xml` is not copied into the repo. `schema.py` records a permalink to the file at the Mixxx 2.5.6 release commit (`94ccc34f`, which carries revision 39; `main` carries 40) and the table and column sets `mixxxctl` relies on, which are the real contract. `scripts/check-schema-upstream.sh` fetches `main` and prints any revision above the ceiling, which is the "visible diff" a vendored copy was meant to provide.
+- **Schema reference, not vendored.** Mixxx's `res/schema.xml` is not copied into the repo. `schema.py` records a permalink to the file at the Mixxx 2.5.6 release commit (`94ccc34f`, which carries revision 39; `main` carries 40) and the table and column sets `mixxxlib` relies on, which are the real contract. `scripts/check-schema-upstream.sh` fetches `main` and prints any revision above the ceiling, which is the "visible diff" a vendored copy was meant to provide.
 - **Scripts** that a human runs are POSIX `sh`. `bash` is used only where `sh` becomes ugly, and `zsh` only if `bash` does too. Anything with real logic is Python.
 
 ## 4. Exit codes and error shape
@@ -89,7 +91,7 @@ Codes 3–10 are raised before any write wherever possible. The only code that c
   "details": {"track_id": 612, "slot": 0, "existing_cue_id": 4251}}}
 ```
 
-Without `--json`, stderr receives `mixxxctl: <code>: <message>`. `details` keys are documented per command and are part of the contract.
+Without `--json`, stderr receives `mixxxlib: <code>: <message>`. `details` keys are documented per command and are part of the contract.
 
 ## 5. Output
 
@@ -100,7 +102,7 @@ With `--json`, every successful command prints exactly one JSON object to stdout
 ```json
 {"ok": true, "command": "crate add", "data": { ... },
  "warnings": [ {"code": "...", "message": "...", "details": { ... }} ],
- "mutation": {"dry_run": false, "backup": "/home/it/.local/share/mixxxctl/backups/mixxxdb-20261008T142233Z-crate-add.sqlite",
+ "mutation": {"dry_run": false, "backup": "/home/it/.local/share/mixxxlib/backups/mixxxdb-20261008T142233Z-crate-add.sqlite",
               "integrity": "ok", "statements": 3} }
 ```
 
@@ -129,13 +131,13 @@ Without `--json`: plain-text tables and key/value blocks on stdout. Positions an
 
 ## 6. Data model
 
-All types live in `mixxxctl.model` as frozen dataclasses and are what the library API returns.
+All types live in `mixxxlib.model` as frozen dataclasses and are what the library API returns.
 
 ### 6.1 Crate
 
 **At schema ≤ 40 (every released Mixxx):** `crates`: `id`, `name` (varchar(48), unique, not null), `count`, `show`, `locked`, `autodj_source`. `crate_tracks`: `(crate_id, track_id)`, unique, **no position column** — crates are unordered sets with no hierarchy. **[verified]**
 
-- `count` is vestigial; Mixxx 2.5 ignores it. `mixxxctl` never reads or writes it and reports a live `track_count` instead.
+- `count` is vestigial; Mixxx 2.5 ignores it. `mixxxlib` never reads or writes it and reports a live `track_count` instead.
 - Names are validated to 1–48 characters before insert; SQLite does not enforce the length but Mixxx's UI assumes it.
 - A `locked` crate refuses membership changes and deletion with exit 4. The caller unlocks it first with `crate update --no-locked`. This mirrors what Mixxx's own UI enforces and is mechanism, not opinion.
 
@@ -147,7 +149,7 @@ All types live in `mixxxctl.model` as frozen dataclasses and are what the librar
 What v1 does about it now:
 
 - The `Crate` model carries `parent_id: int | None` and every crate JSON shape includes `"parent_id"`, always `null` below schema 41. Callers never see the shape change.
-- **Sibling uniqueness is enforced in application code.** SQLite treats `NULL` as distinct inside a UNIQUE constraint, so after revision 42 the database no longer prevents two root-level crates from sharing a name. `mixxxctl` refuses a duplicate name among siblings at every level, root included, with exit 4.
+- **Sibling uniqueness is enforced in application code.** SQLite treats `NULL` as distinct inside a UNIQUE constraint, so after revision 42 the database no longer prevents two root-level crates from sharing a name. `mixxxlib` refuses a duplicate name among siblings at every level, root included, with exit 4.
 - **No path syntax, no reserved characters.** A crate is addressed by name or `--id`; once nesting exists, a name that matches crates under different parents is ambiguous (exit 4) and `--parent CRATE` disambiguates. Imposing a separator on crate names would be a naming rule, which belongs to the caller.
 - Nested-crate commands exist in the surface (§8.2) and return exit 6 below schema 41. The schema ceiling stays at 40 until revisions 41 and 42 have been verified against a real database (§7.3), because the PR is a draft and its SQL may still change before merge.
 
@@ -179,7 +181,7 @@ A track is a `library` row joined through `track_locations` on `library.location
 
 Fields with a file tag are **file-backed**. Mixxx re-imports a file's tags whenever the file's modification time is newer than `library.source_synchronized_ms`, so for these fields the audio file is the source of truth and the database is Mixxx's cache of it. A database-only write (`--mixxx-only`) to a file-backed field therefore lasts until the next time the file changes; the command says so with a `file_backed` warning. The default two-store write (§7.4) has no such caveat because it updates both and refreshes the sync timestamp.
 
-**Read-only fields** (exposed in output, never written by `mixxxctl`): `id`, `location` (`id`, `path`, `filename`, `directory`, `filesize`, `fs_deleted`), `duration`, `bitrate`, `samplerate`, `channels`, `filetype`, `replaygain`, `replaygain_peak`, `datetime_added`, `played`, `timesplayed`, `last_played_at`, `mixxx_deleted`, `header_parsed`, `source_synchronized_ms`, `beats_version`, `beats_sub_version`, `keys_version`, `keys_sub_version`, cover-art columns, and `tuning_frequency_hz` where present (schema 40). This split — tag-like fields writable, bookkeeping and analysis read-only — is the interpretation of "all metadata fields" this spec commits to.
+**Read-only fields** (exposed in output, never written by `mixxxlib`): `id`, `location` (`id`, `path`, `filename`, `directory`, `filesize`, `fs_deleted`), `duration`, `bitrate`, `samplerate`, `channels`, `filetype`, `replaygain`, `replaygain_peak`, `datetime_added`, `played`, `timesplayed`, `last_played_at`, `mixxx_deleted`, `header_parsed`, `source_synchronized_ms`, `beats_version`, `beats_sub_version`, `keys_version`, `keys_sub_version`, cover-art columns, and `tuning_frequency_hz` where present (schema 40). This split — tag-like fields writable, bookkeeping and analysis read-only — is the interpretation of "all metadata fields" this spec commits to.
 
 File-tag mapping by format: MP3 and AIFF carry ID3v2 (AIFF in its `ID3` chunk); FLAC carries Vorbis comments. The mapping above mirrors Mixxx's own import mapping; the `grouping` frames are verified from Mixxx source, the rest are the standard frames Mixxx's TagLib layer uses. Other formats mutagen can open are handled by the same table where the tag family matches, and refused with exit 9 otherwise.
 
@@ -191,14 +193,14 @@ File-tag mapping by format: MP3 and AIFF carry ID3v2 (AIFF in its `ID3` chunk); 
 
 - `type` (from upstream `cueinfo.h`): 0 Invalid, 1 HotCue, 2 MainCue, 3 Beat (unused), 4 Loop, 5 Jump, 6 Intro, 7 Outro, 8 N60dBSound (analyzer-owned, hidden). Exposed by name in JSON (`hotcue`, `main`, `loop`, `jump`, `intro`, `outro`, `n60db`), with the integer alongside.
 - `position` and `length` are **interleaved stereo samples**: `seconds = value / (samplerate × channels)`. Declared `INTEGER` but **store `REAL` in real data**; the reader always treats them as `float`. Output carries both `position_samples` and `position_seconds`. **[verified]**
-- `hotcue` is the 0-based slot in the database (1-based in the UI); `-1` for non-hotcue types. There is **no uniqueness constraint on `(track_id, type, hotcue)`**; Mixxx resolves duplicates by dropping one arbitrarily, so `mixxxctl` enforces uniqueness itself. **[verified]**
+- `hotcue` is the 0-based slot in the database (1-based in the UI); `-1` for non-hotcue types. There is **no uniqueness constraint on `(track_id, type, hotcue)`**; Mixxx resolves duplicates by dropping one arbitrarily, so `mixxxlib` enforces uniqueness itself. **[verified]**
 - `color`: a hotcue whose colour is `0` is silently discarded by Mixxx on load. Every cue write requires an explicit non-zero colour. **[verified]**
-- **Colour representation.** Rows Mixxx wrote itself store 24-bit RGB (`0xFF8000` for every loop in the reference library); the harness wrote `0xFF`-prefixed 32-bit values and Mixxx rendered them correctly. `mixxxctl` stores what Mixxx stores — 24-bit RGB, 1–0xFFFFFF — and accepts input as `#RRGGBB`, `0xRRGGBB`, decimal, or 8-digit `AARRGGBB` with the alpha byte stripped. The first integration test against live Mixxx asserts both forms render identically.
+- **Colour representation.** Rows Mixxx wrote itself store 24-bit RGB (`0xFF8000` for every loop in the reference library); the harness wrote `0xFF`-prefixed 32-bit values and Mixxx rendered them correctly. `mixxxlib` stores what Mixxx stores — 24-bit RGB, 1–0xFFFFFF — and accepts input as `#RRGGBB`, `0xRRGGBB`, decimal, or 8-digit `AARRGGBB` with the alpha byte stripped. The first integration test against live Mixxx asserts both forms render identically.
 - **Writable types in v1:** `hotcue`, `loop`, `jump`, `intro`, `outro`. `main` is read-only until the relationship between a MainCue row and `library.cuepoint` is verified; `n60db`, `beat` and `invalid` are never written.
 
 ### 6.4 Beatgrid, key blob, and the three caveated fields
 
-`library.beats` is a protobuf blob whose format is named in `beats_version`. `BeatGrid-2.0` is one `double` (bpm) and one `varint` (`first_beat.frame_position`), 16 bytes. The vendored decoder (`mixxxctl.blobs.beats`) reads it with no protobuf dependency; it decoded 566/566 blobs in the reference library with every BPM matching `library.bpm` exactly. **[verified]**
+`library.beats` is a protobuf blob whose format is named in `beats_version`. `BeatGrid-2.0` is one `double` (bpm) and one `varint` (`first_beat.frame_position`), 16 bytes. The vendored decoder (`mixxxlib.blobs.beats`) reads it with no protobuf dependency; it decoded 566/566 blobs in the reference library with every BPM matching `library.bpm` exactly. **[verified]**
 
 - Dispatch on `beats_version`; `BeatGrid-1.0`, `BeatMap-1.0`, `BeatMap-2.0` are recognised by name and reported as `{"version": ..., "decoded": false}` in v1; unknown versions likewise, with a warning. Nothing is guessed.
 - **Units:** `frame_position` is per-channel frames, `seconds = frame_position / samplerate`. This differs from cues by a factor of `channels`. The conversion is covered by an explicit test.
@@ -207,13 +209,13 @@ File-tag mapping by format: MP3 and AIFF carry ID3v2 (AIFF in its `ID3` chunk); 
 
 ### 6.5 Settings
 
-`mixxx.cfg` is plain INI. `settings show` parses it into `{section: {key: value}}`. No setting changes `mixxxctl` behaviour in v1; `SyncTrackMetadataExport` is surfaced because a caller may want to know whether Mixxx will propagate database edits to files on its own (in the reference library it is `0`: it will not).
+`mixxx.cfg` is plain INI. `settings show` parses it into `{section: {key: value}}`. No setting changes `mixxxlib` behaviour in v1; `SyncTrackMetadataExport` is surfaced because a caller may want to know whether Mixxx will propagate database edits to files on its own (in the reference library it is `0`: it will not).
 
 ## 7. Safety protocol
 
 ### 7.1 Facts the protocol is built on **[verified]**
 
-- The schema's foreign keys are broken upstream: `crate_tracks.track_id`, `cues.track_id` and `PlaylistTracks.track_id` reference a non-existent `library_old`; `library.location` references the text column `track_locations(location)`; `track_analysis.track_id` is declared against `track_locations(id)` but holds a `library.id`. `PRAGMA foreign_key_check` reports thousands of violations on a healthy database. **`mixxxctl` never enables `PRAGMA foreign_keys` and never alters the DDL.** Referential integrity is enforced in application code.
+- The schema's foreign keys are broken upstream: `crate_tracks.track_id`, `cues.track_id` and `PlaylistTracks.track_id` reference a non-existent `library_old`; `library.location` references the text column `track_locations(location)`; `track_analysis.track_id` is declared against `track_locations(id)` but holds a `library.id`. `PRAGMA foreign_key_check` reports thousands of violations on a healthy database. **`mixxxlib` never enables `PRAGMA foreign_keys` and never alters the DDL.** Referential integrity is enforced in application code.
 - `journal_mode = delete`. An exclusive writer blocks readers too, so `BEGIN IMMEDIATE` with a short timeout is a reliable lock probe.
 - Running Mixxx holds many connections and an in-memory track cache that overwrites external edits. The hazard of editing live is the cache, not the file lock.
 - Launching Mixxx writes to the database by itself (a new history playlist per launch).
@@ -257,9 +259,9 @@ Mutagen is used directly rather than Mixxx's own export because Mixxx's MP3 tag 
 
 ### 7.6 Backups
 
-- Location: `$XDG_DATA_HOME/mixxxctl/backups/` (default `~/.local/share/mixxxctl/backups/`), overridable with `--backup-dir` or `MIXXXCTL_BACKUP_DIR`.
+- Location: `$XDG_DATA_HOME/mixxxlib/backups/` (default `~/.local/share/mixxxlib/backups/`), overridable with `--backup-dir` or `MIXXXLIB_BACKUP_DIR`.
 - Name: `mixxxdb-<UTC ISO 8601 basic, e.g. 20261008T142233Z>-<command with spaces as hyphens>.sqlite`.
-- Retention: TTL of 30 days (`MIXXXCTL_BACKUP_TTL_DAYS`) with a floor of the 10 most recent (`MIXXXCTL_BACKUP_KEEP_MIN`), so a long gap can never leave zero backups. Tag snapshots follow the same rule.
+- Retention: TTL of 30 days (`MIXXXLIB_BACKUP_TTL_DAYS`) with a floor of the 10 most recent (`MIXXXLIB_BACKUP_KEEP_MIN`), so a long gap can never leave zero backups. Tag snapshots follow the same rule.
 - There is no `--no-backup`. The sandbox harness redirects with `--backup-dir`.
 
 ## 8. Command surface
@@ -279,7 +281,7 @@ Mutating commands additionally accept `--dry-run` and `--yes`.
 
 ### 8.1 `info` and `settings`
 
-- `info` — resolved paths, schema version, capabilities and verdict, whether Mixxx is running, backup directory, `mixxxctl` version. Pure read. The first thing a caller or a human runs.
+- `info` — resolved paths, schema version, capabilities and verdict, whether Mixxx is running, backup directory, `mixxxlib` version. Pure read. The first thing a caller or a human runs.
 - `settings show [SECTION[.KEY]]` — contents of `mixxx.cfg`.
 
 ### 8.2 `crate`
@@ -384,7 +386,7 @@ Pure read. Runs every check, prints findings, exits 0 when clean, 10 when any er
 Database and config resolution, highest precedence first:
 
 1. `--db FILE` (database) and `--settings-path DIR` (config and, if `--db` absent, database).
-2. `MIXXXCTL_DB`, `MIXXXCTL_SETTINGS_PATH`.
+2. `MIXXXLIB_DB`, `MIXXXLIB_SETTINGS_PATH`.
 3. Platform default settings directory: Linux `~/.mixxx`; macOS `~/Library/Containers/org.mixxx.mixxx/Data/Library/Application Support/Mixxx`, falling back to `~/Library/Application Support/Mixxx`; Windows `%LOCALAPPDATA%\Mixxx`.
 
 A database that does not exist at the resolved path → exit 3, with the path in the details. Nothing is ever created implicitly.
@@ -394,9 +396,9 @@ A database that does not exist at the resolved path → exit 3, with the path in
 `src/` layout; the CLI is a thin shell over a library that never imports Typer.
 
 ```
-src/mixxxctl/
+src/mixxxlib/
   __init__.py          # __version__, Library re-export
-  __main__.py          # python -m mixxxctl
+  __main__.py          # python -m mixxxlib
   model.py             # Crate (with parent_id), Track, Cue, Beatgrid, MusicalKey, Finding (frozen dataclasses)
   errors.py            # MixxxctlError(code, exit_code, details) and subclasses, one per §4 row
   paths.py             # settings/db/backup resolution (§9)
@@ -420,7 +422,7 @@ src/mixxxctl/
     __init__.py        # root Typer app, global options, error → exit code mapping
     crate.py  track.py  cue.py  doctor.py  backup.py  settings.py
 scripts/
-  build-zipapp.sh          # shiv -c mixxxctl -o dist/mixxxctl . (POSIX sh)
+  build-zipapp.sh          # shiv -c mixxxlib -o dist/mixxxlib . (POSIX sh)
   sandbox-mixxx.sh         # §12.3 live harness (POSIX sh)
   check-schema-upstream.sh # fetch main's schema.xml, print revisions above the ceiling (POSIX sh)
   make-fixture.py          # trims a real database copy into tests/fixtures
@@ -433,7 +435,7 @@ README.md  pyproject.toml
 ### 10.1 Library API
 
 ```python
-from mixxxctl import Library
+from mixxxlib import Library
 
 lib = Library.open(settings_path=None, db=None, backup_dir=None)
 lib.crates.list(parent=None) -> list[Crate]
@@ -456,7 +458,7 @@ Every mutating method runs the full §7.3 protocol and returns a `MutationResult
 
 ## 11. README
 
-Required sections, in this order: what it does and does not do; install, with the zipapp first (download or build `dist/mixxxctl`, `chmod +x`, put it on `PATH`; Python ≥ 3.12 is the only requirement) and the editable venv second as the developer path; the safety rules (Mixxx must be closed; backups are automatic and where they live; foreign keys are broken upstream and must never be enabled; the schema ceiling); the command surface with one example per group; the JSON envelope and exit-code table; the three caveated fields and the `--mixxx-only` caveat; nested crates: what is prepared and what waits on upstream; path discovery; running the tests and the live harness.
+Required sections, in this order: what it does and does not do; install, with the zipapp first (download or build `dist/mixxxlib`, `chmod +x`, put it on `PATH`; Python ≥ 3.12 is the only requirement) and the editable venv second as the developer path; the safety rules (Mixxx must be closed; backups are automatic and where they live; foreign keys are broken upstream and must never be enabled; the schema ceiling); the command surface with one example per group; the JSON envelope and exit-code table; the three caveated fields and the `--mixxx-only` caveat; nested crates: what is prepared and what waits on upstream; path discovery; running the tests and the live harness.
 
 ## 12. Testing
 
@@ -474,13 +476,13 @@ Required sections, in this order: what it does and does not do; install, with th
 
 **Integration tests** (fresh copy of a fixture per test): every command, both output modes; every validation rejection in §8.4 and §6.1; the schema guard refusing 41 on the ceiling of 40 and naming it; nested-crate commands returning exit 6 on the schema-39 fixture and working on the schema-42 fixture with the test-only ceiling override, including sibling uniqueness at the root and cycle refusal; the lock probe refusing while another connection holds `BEGIN EXCLUSIVE`; backup creation, naming and retention floor; two-store write order, including a simulated database failure after the file write; `--mixxx-only` leaving the file untouched and emitting `file_backed`; `--dry-run` producing no backup and no change. **Every integration test ends by running `doctor` and asserting no new errors.**
 
-**Zipapp smoke test:** build `dist/mixxxctl` with `scripts/build-zipapp.sh` into a temporary directory and run `info --json` and `doctor --json` through it against the schema-39 fixture, asserting the envelope parses and the exit codes match the venv run. This is the only test that touches the distribution artifact, and it is what catches a dependency that shiv cannot bundle.
+**Zipapp smoke test:** build `dist/mixxxlib` with `scripts/build-zipapp.sh` into a temporary directory and run `info --json` and `doctor --json` through it against the schema-39 fixture, asserting the envelope parses and the exit codes match the venv run. This is the only test that touches the distribution artifact, and it is what catches a dependency that shiv cannot bundle.
 
 **Schema pin:** the schema-39 fixture's tables and columns equal the column sets in `schema.py`. `scripts/check-schema-upstream.sh` is a manual, network-using check and is not part of the test run.
 
 ### 12.3 Live Mixxx harness (manual, Linux)
 
-`scripts/sandbox-mixxx.sh` reproduces the verified recipe: recreate `/tmp/mixxx-sandbox`, copy the database and `mixxx.cfg` in, apply the test writes with `mixxxctl --settings-path /tmp/mixxx-sandbox --backup-dir /tmp/mixxx-sandbox/backups`, launch `QT_QPA_PLATFORM=xcb mixxx --settings-path /tmp/mixxx-sandbox --safe-mode <track>`, screenshot via `xdotool` and `import`, `SIGTERM`, then diff the sandbox database (row values, ids **and** `sqlite_sequence`) against the pre-launch snapshot. Known noise: ALSA errors, a missing `samplers.xml` warning, and one new history row in `Playlists` per launch. A `SIGTERM` result proves Mixxx did not clobber the rows, not that it re-saved them on a clean shutdown; that remains an open question.
+`scripts/sandbox-mixxx.sh` reproduces the verified recipe: recreate `/tmp/mixxx-sandbox`, copy the database and `mixxx.cfg` in, apply the test writes with `mixxxlib --settings-path /tmp/mixxx-sandbox --backup-dir /tmp/mixxx-sandbox/backups`, launch `QT_QPA_PLATFORM=xcb mixxx --settings-path /tmp/mixxx-sandbox --safe-mode <track>`, screenshot via `xdotool` and `import`, `SIGTERM`, then diff the sandbox database (row values, ids **and** `sqlite_sequence`) against the pre-launch snapshot. Known noise: ALSA errors, a missing `samplers.xml` warning, and one new history row in `Playlists` per launch. A `SIGTERM` result proves Mixxx did not clobber the rows, not that it re-saved them on a clean shutdown; that remains an open question.
 
 The harness has already established that externally written hotcues load, render in the written colours and survive byte-identical, that `color = 0` hotcues are discarded, and that duplicate slots are resolved by dropping one.
 
