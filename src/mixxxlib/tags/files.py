@@ -44,16 +44,21 @@ class TagFile:
             raise TagError(f"mutagen could not read {self.path}: {exc}", path=str(self.path)) from exc
         if audio is None:
             raise TagError(f"unsupported audio format: {self.path}", path=str(self.path))
-        if isinstance(audio.tags, VCommentDict) or type(audio).__name__ in ("FLAC", "OggVorbis", "OggOpus", "OggFLAC"):
-            self.kind = "vorbis"
-            if audio.tags is None:
-                audio.add_tags()
-        elif isinstance(audio.tags, id3.ID3) or type(audio).__name__ in ("MP3", "AIFF", "WAVE", "DSF"):
-            self.kind = "id3"
-            if audio.tags is None:
-                audio.add_tags()
-        else:
-            raise TagError(f"{self.path} has a tag family mixxxlib does not handle ({type(audio).__name__})", path=str(self.path))
+        try:
+            if isinstance(audio.tags, VCommentDict) or type(audio).__name__ in ("FLAC", "OggVorbis", "OggOpus", "OggFLAC"):
+                self.kind = "vorbis"
+                if audio.tags is None:
+                    audio.add_tags()
+            elif isinstance(audio.tags, id3.ID3) or type(audio).__name__ in ("MP3", "AIFF", "WAVE", "DSF"):
+                self.kind = "id3"
+                if audio.tags is None:
+                    audio.add_tags()
+            else:
+                raise TagError(f"{self.path} has a tag family mixxxlib does not handle ({type(audio).__name__})", path=str(self.path))
+        except TagError:
+            raise
+        except Exception as exc:  # e.g. add_tags() failing on a corrupt container
+            raise TagError(f"mutagen could not initialise tags for {self.path}: {exc}", path=str(self.path)) from exc
         self._audio = audio
 
     # -- read -----------------------------------------------------------------
@@ -111,7 +116,11 @@ class TagFile:
                 if value is not None:
                     tags.add(getattr(id3, frame)(encoding=3, text=[value]))
             elif field == "grouping":
+                # GRP1 is only ever a read fallback for a legacy file with no TIT1 (spec §6.2); a
+                # write must clear it too, or a stale GRP1 would shadow a None-removal or keep
+                # read() falling back to it instead of the freshly written TIT1.
                 tags.delall("TIT1")
+                tags.delall("GRP1")
                 if value is not None:
                     tags.add(id3.TIT1(encoding=3, text=[value]))
             elif field == "comment":
@@ -142,21 +151,40 @@ def write_tags(path: os.PathLike[str] | str, values: dict[str, str | None]) -> N
 
 
 def snapshot_tags(path: os.PathLike[str] | str, backup_dir: Path, track_id: int, *, now: datetime | None = None) -> Path:
-    stamp = utc_stamp(now or datetime.now(timezone.utc))
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    target = backup_dir / f"{TAG_PREFIX}{stamp}-{track_id}.json"
-    n = 1
-    while target.exists():
-        n += 1
-        target = backup_dir / f"{TAG_PREFIX}{stamp}-{track_id}-{n}.json"
-    payload = {"path": str(Path(path)), "track_id": track_id, "taken": stamp, "tags": TagFile(path).read()}
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    """Write a JSON snapshot of `path`'s current tags under `backup_dir`. Always raises TagError."""
+    try:
+        stamp = utc_stamp(now or datetime.now(timezone.utc))
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        target = backup_dir / f"{TAG_PREFIX}{stamp}-{track_id}.json"
+        n = 1
+        while target.exists():
+            n += 1
+            target = backup_dir / f"{TAG_PREFIX}{stamp}-{track_id}-{n}.json"
+        payload = {"path": str(Path(path)), "track_id": track_id, "taken": stamp, "tags": TagFile(path).read()}
+        target.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except TagError:
+        raise
+    except Exception as exc:
+        raise TagError(f"could not snapshot tags for {path}: {exc}", path=str(path), backup_dir=str(backup_dir)) from exc
     return target
 
 
 def restore_tags(snapshot_path: os.PathLike[str] | str) -> None:
-    payload = json.loads(Path(snapshot_path).read_text(encoding="utf-8"))
-    write_tags(payload["path"], {field: payload["tags"].get(field) for field in TAG_FIELDS})
+    """Write back the tags recorded in a snapshot produced by `snapshot_tags`. Always raises TagError."""
+    try:
+        raw = Path(snapshot_path).read_text(encoding="utf-8")
+    except Exception as exc:
+        raise TagError(f"could not read tag snapshot {snapshot_path}: {exc}", snapshot=str(snapshot_path)) from exc
+    try:
+        payload = json.loads(raw)
+        path = payload["path"]
+        tags = payload["tags"]
+        values = {field: tags.get(field) for field in TAG_FIELDS}
+    except TagError:
+        raise
+    except Exception as exc:
+        raise TagError(f"tag snapshot {snapshot_path} is malformed: {exc}", snapshot=str(snapshot_path)) from exc
+    write_tags(path, values)
 
 
 class TagWriteAction:

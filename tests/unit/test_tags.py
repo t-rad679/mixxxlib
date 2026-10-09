@@ -113,3 +113,110 @@ def test_unsupported_and_missing_files_are_tag_errors(tmp_path):
     with pytest.raises(TagError) as e:
         files.read_tags(tmp_path / "missing.mp3")
     assert e.value.details["path"].endswith("missing.mp3")
+
+
+# -- Finding 2: grouping=None (and overwrite) must clear a legacy GRP1 fallback too --------------
+
+def _grp1_only(tmp_path):
+    path = copy(tmp_path, "aiff")
+    audio = AIFF(path)
+    audio.tags.delall("TIT1")
+    audio.tags.add(id3.GRP1(encoding=3, text=["legacy"]))
+    audio.save()
+    return path
+
+
+def test_grouping_clear_removes_legacy_grp1_fallback(tmp_path):
+    path = _grp1_only(tmp_path)
+    assert files.read_tags(path)["grouping"] == "legacy"
+    files.write_tags(path, {"grouping": None})
+    assert files.read_tags(path)["grouping"] is None
+    audio = AIFF(path)
+    assert "GRP1" not in audio.tags and "TIT1" not in audio.tags
+
+
+def test_grouping_overwrite_on_grp1_only_file_leaves_no_stale_fallback(tmp_path):
+    path = _grp1_only(tmp_path)
+    files.write_tags(path, {"grouping": "fresh"})
+    assert files.read_tags(path)["grouping"] == "fresh"
+    audio = AIFF(path)
+    assert "GRP1" not in audio.tags
+    assert str(audio.tags["TIT1"].text[0]) == "fresh"
+
+
+# -- Finding 3: snapshot/restore of a field that was ABSENT beforehand, per dialect --------------
+
+def test_snapshot_restore_of_previously_absent_field_id3(tmp_path):
+    path = copy(tmp_path, "mp3")
+    before = files.read_tags(path)
+    assert before["composer"] is None  # genuinely absent on this fixture
+    snap = files.snapshot_tags(path, tmp_path / "backups", 1)
+    files.write_tags(path, {"composer": "New Composer"})
+    assert files.read_tags(path)["composer"] == "New Composer"
+    files.restore_tags(snap)
+    after = files.read_tags(path)
+    assert after["composer"] is None
+    assert after == before
+
+
+def test_snapshot_restore_of_previously_absent_field_vorbis(tmp_path):
+    path = copy(tmp_path, "flac")
+    before = files.read_tags(path)
+    assert before["composer"] is None  # genuinely absent on this fixture
+    snap = files.snapshot_tags(path, tmp_path / "backups", 1)
+    files.write_tags(path, {"composer": "New Composer"})
+    assert files.read_tags(path)["composer"] == "New Composer"
+    files.restore_tags(snap)
+    after = files.read_tags(path)
+    assert after["composer"] is None
+    assert after == before
+
+
+# -- Finding 1: every exception out of this module, including OS/parse failures, is TagError -----
+
+def test_snapshot_tags_wraps_os_errors_as_tag_error(tmp_path):
+    path = copy(tmp_path, "mp3")
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")  # backup_dir's parent is a file, so mkdir() must fail
+    backup_dir = blocker / "backups"
+    with pytest.raises(TagError) as e:
+        files.snapshot_tags(path, backup_dir, 1)
+    assert e.value.exit_code == 9
+
+
+def test_restore_tags_missing_snapshot_is_tag_error(tmp_path):
+    with pytest.raises(TagError) as e:
+        files.restore_tags(tmp_path / "missing-snapshot.json")
+    assert e.value.exit_code == 9
+
+
+def test_restore_tags_malformed_json_is_tag_error(tmp_path):
+    snap = tmp_path / "bad.json"
+    snap.write_text("{not valid json")
+    with pytest.raises(TagError) as e:
+        files.restore_tags(snap)
+    assert e.value.exit_code == 9
+
+
+def test_restore_tags_snapshot_missing_required_keys_is_tag_error(tmp_path):
+    snap = tmp_path / "incomplete.json"
+    snap.write_text(json.dumps({"path": "whatever"}))  # no "tags" key
+    with pytest.raises(TagError) as e:
+        files.restore_tags(snap)
+    assert e.value.exit_code == 9
+
+
+def test_constructor_wraps_add_tags_failure_as_tag_error(tmp_path, monkeypatch):
+    path = copy(tmp_path, "mp3")
+
+    class FakeMP3:
+        tags = None
+
+        def add_tags(self):
+            raise RuntimeError("boom")
+
+    FakeMP3.__name__ = "MP3"
+    monkeypatch.setattr(files.mutagen, "File", lambda p: FakeMP3())
+    with pytest.raises(TagError) as e:
+        files.TagFile(path)
+    assert e.value.exit_code == 9
