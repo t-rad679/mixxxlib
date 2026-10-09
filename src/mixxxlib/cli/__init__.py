@@ -17,7 +17,7 @@ import typer
 # private `typer._click` module at all. `typer.Exit` and `typer.Abort` are *not*
 # `TyperException` subclasses (verified) and are handled separately below.
 from mixxxlib import __version__
-from mixxxlib.cli import info as info_cmd, settings as settings_cmd, track as track_cmd
+from mixxxlib.cli import crate as crate_cmd, info as info_cmd, settings as settings_cmd, track as track_cmd
 from mixxxlib.cli.common import Globals, emit_error
 from mixxxlib.errors import InternalError, UsageError
 
@@ -52,6 +52,7 @@ def root(
 app.command("info")(info_cmd.info)
 app.add_typer(settings_cmd.app, name="settings")
 app.add_typer(track_cmd.app, name="track")
+app.add_typer(crate_cmd.app, name="crate")
 
 
 def main(argv: list[str] | None = None) -> int:

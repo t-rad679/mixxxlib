@@ -22,7 +22,7 @@ import typer
 from mixxxlib import output
 from mixxxlib.errors import ConfirmationRequiredError, InternalError, MixxxlibError, ValidationError
 from mixxxlib.library import Library
-from mixxxlib.model import MutationResult, WarningMessage
+from mixxxlib.model import Crate, MutationResult, Track, WarningMessage
 
 
 @dataclass
@@ -160,3 +160,17 @@ def parse_int(value: str, what: str) -> int:
         return int(value)
     except (TypeError, ValueError):
         raise ValidationError(f"{what} must be an integer, got {value!r}", value=value) from None
+
+
+def resolve_crate(lib: Library, selector: str, *, by_id: bool, parent: str | None) -> Crate:
+    parent_crate = lib.crates.get(parent) if parent else None
+    if by_id:
+        return lib.crates.get(parse_int(selector, "crate id"), by_id=True)
+    return lib.crates.get(selector, parent=parent_crate)
+
+
+def resolve_track(lib: Library, selector: str, *, paths: bool) -> tuple[Track, list[WarningMessage]]:
+    """Track plus any beatgrid-decode warnings for it (spec §6.4)."""
+    if paths:
+        return lib.tracks.get_by_path(selector)
+    return lib.tracks.get(parse_int(selector, "track id"))

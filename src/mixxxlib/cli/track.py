@@ -5,25 +5,9 @@ from typing import Annotated, Optional
 import typer
 
 from mixxxlib import output
-from mixxxlib.cli.common import PathsOption, command, global_options, open_library, parse_int
-from mixxxlib.library import Library
-from mixxxlib.model import Crate, Track, WarningMessage
+from mixxxlib.cli.common import PathsOption, command, global_options, open_library, resolve_crate, resolve_track
 
 app = typer.Typer(no_args_is_help=True, help="Track metadata, analysis summary and cues.")
-
-
-def resolve_crate(lib: Library, selector: str, *, by_id: bool, parent: str | None) -> Crate:
-    parent_crate = lib.crates.get(parent) if parent else None
-    if by_id:
-        return lib.crates.get(parse_int(selector, "crate id"), by_id=True)
-    return lib.crates.get(selector, parent=parent_crate)
-
-
-def resolve_track(lib: Library, selector: str, *, paths: bool) -> tuple[Track, list[WarningMessage]]:
-    """Track plus any beatgrid-decode warnings for it (spec §6.4)."""
-    if paths:
-        return lib.tracks.get_by_path(selector)
-    return lib.tracks.get(parse_int(selector, "track id"))
 
 
 @app.command("list")
