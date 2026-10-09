@@ -101,14 +101,30 @@ def manifest_42() -> dict:
     return json.loads((FIXTURES / "manifest-42.json").read_text())
 
 
-@pytest.fixture
-def sandbox(tmp_path, clean_env) -> Sandbox:
-    return materialise("mixxxdb.sqlite", tmp_path)
+def _doctor_errors(box: Sandbox) -> set[tuple[str, str]]:
+    from mixxxlib.library import Library
+
+    lib = Library.open(settings_path=str(box.settings_dir), backup_dir=str(box.backup_dir), process_check=lambda: False)
+    return {(f.check, f.message) for f in lib.doctor() if f.severity == "error"}
+
+
+def _with_doctor_check(box: Sandbox):
+    before = _doctor_errors(box)
+    yield box
+    if box.__dict__.get("_skip_doctor"):
+        return
+    after = _doctor_errors(box)
+    assert after <= before, f"doctor found new error findings: {sorted(after - before)}"
 
 
 @pytest.fixture
-def sandbox_42(tmp_path, clean_env, monkeypatch) -> Sandbox:
+def sandbox(tmp_path, clean_env):
+    yield from _with_doctor_check(materialise("mixxxdb.sqlite", tmp_path))
+
+
+@pytest.fixture
+def sandbox_42(tmp_path, clean_env, monkeypatch):
     from mixxxlib.db import schema
 
     monkeypatch.setattr(schema, "SCHEMA_CEILING", 42)
-    return materialise("mixxxdb-42.sqlite", tmp_path)
+    yield from _with_doctor_check(materialise("mixxxdb-42.sqlite", tmp_path))

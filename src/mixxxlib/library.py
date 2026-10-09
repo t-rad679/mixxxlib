@@ -8,9 +8,9 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import closing, contextmanager
 from typing import Any
 
-from mixxxlib import __version__, paths as paths_mod
+from mixxxlib import __version__, doctor as doctor_mod, paths as paths_mod
 from mixxxlib.db import connection as conn_mod, crates as crates_sql, schema as schema_mod
-from mixxxlib.model import Crate, CrateNode, MutationResult, SchemaInfo, WarningMessage
+from mixxxlib.model import Crate, CrateNode, Finding, MutationResult, SchemaInfo, WarningMessage
 from mixxxlib.safety import backup as backup_mod
 from mixxxlib.safety.guard import mixxx_process_running
 from mixxxlib.settings import load_mixxx_cfg
@@ -88,6 +88,20 @@ class Library:
             "mixxx_running": self.mixxx_running(),
             "backups": {"count": len(backups), "newest": backups[0].name if backups else None},
         }
+
+    # -- doctor -----------------------------------------------------------------------
+
+    def doctor(self) -> list[Finding]:
+        with self.read() as conn:
+            # self.nested trusts the declared schema version; a database whose settings row claims a
+            # revision the DDL was never migrated to (e.g. schema bumped past the ceiling by hand) would
+            # otherwise make orphans/crates checks query crates.parent_id, a column that does not exist.
+            # Doctor must survive that — cross-check the actual column so it degrades instead of crashing.
+            nested = self.nested and schema_mod.has_column(conn, "crates", "parent_id")
+            ctx = doctor_mod.DoctorContext(conn=conn, schema=schema_mod.schema_info(conn, ceiling=self.schema_ceiling),
+                                           backup_dir=self.paths.backup_dir, process_check=self._process_check,
+                                           nested=nested)
+            return doctor_mod.run_doctor(ctx)
 
 
 class CratesAPI:
