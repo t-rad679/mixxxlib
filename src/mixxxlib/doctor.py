@@ -17,6 +17,21 @@ from mixxxlib.safety import backup as backup_mod
 KNOWN_KEYS_VERSIONS = frozenset({"KeyMap-1.0"})
 SAMPLE = 10
 
+# Mixxx writes -1 as the "not set" sentinel for a cue position (observed on `outro` cues in the
+# fixture; the convention is documented as applying to other cue types too, e.g. `intro`). -1 is
+# not a real negative position, so it must not trip either half of the outside-track test below.
+UNSET_POSITION = -1
+
+# Tolerance (in the same unit as cues.position: interleaved samples, i.e. seconds * samplerate *
+# channels) for the "cue ends beyond the track" test. `library.duration` is a float whose rounding
+# can put `duration * samplerate * channels` a fraction of a sample below a cue that in fact ends
+# exactly at the track's end — observed in the fixture as a ~7.5e-5-sample overshoot (cue 2603).
+# One full sample is ~13,000x that observed noise, while a genuinely misplaced cue is expected to be
+# off by many samples (a different unit, a dropped multiplication by `channels`, a stale cue carried
+# over from a re-encoded file, etc.), so this tolerance absorbs the float noise without being loose
+# enough to hide a real one.
+OUTSIDE_TRACK_TOLERANCE = 1.0
+
 
 @dataclass
 class DoctorContext:
@@ -52,19 +67,19 @@ def check_integrity(ctx: DoctorContext) -> list[Finding]:
 
 ORPHAN_QUERIES: list[tuple[str, str]] = [
     ("crate_tracks.crate_id -> crates.id",
-     "SELECT ct.track_id FROM crate_tracks ct LEFT JOIN crates c ON c.id = ct.crate_id WHERE c.id IS NULL"),
+     "SELECT ct.track_id FROM crate_tracks ct LEFT JOIN crates c ON c.id = ct.crate_id WHERE c.id IS NULL ORDER BY ct.track_id"),
     ("crate_tracks.track_id -> library.id",
-     "SELECT ct.track_id FROM crate_tracks ct LEFT JOIN library l ON l.id = ct.track_id WHERE l.id IS NULL"),
+     "SELECT ct.track_id FROM crate_tracks ct LEFT JOIN library l ON l.id = ct.track_id WHERE l.id IS NULL ORDER BY ct.track_id"),
     ("cues.track_id -> library.id",
-     "SELECT cu.id FROM cues cu LEFT JOIN library l ON l.id = cu.track_id WHERE l.id IS NULL"),
+     "SELECT cu.id FROM cues cu LEFT JOIN library l ON l.id = cu.track_id WHERE l.id IS NULL ORDER BY cu.id"),
     ("PlaylistTracks.playlist_id -> Playlists.id",
-     "SELECT pt.id FROM PlaylistTracks pt LEFT JOIN Playlists p ON p.id = pt.playlist_id WHERE p.id IS NULL"),
+     "SELECT pt.id FROM PlaylistTracks pt LEFT JOIN Playlists p ON p.id = pt.playlist_id WHERE p.id IS NULL ORDER BY pt.id"),
     ("PlaylistTracks.track_id -> library.id",
-     "SELECT pt.id FROM PlaylistTracks pt LEFT JOIN library l ON l.id = pt.track_id WHERE l.id IS NULL"),
+     "SELECT pt.id FROM PlaylistTracks pt LEFT JOIN library l ON l.id = pt.track_id WHERE l.id IS NULL ORDER BY pt.id"),
     ("library.location -> track_locations.id",
-     "SELECT l.id FROM library l LEFT JOIN track_locations tl ON tl.id = l.location WHERE tl.id IS NULL"),
+     "SELECT l.id FROM library l LEFT JOIN track_locations tl ON tl.id = l.location WHERE tl.id IS NULL ORDER BY l.id"),
     ("track_analysis.track_id -> library.id",
-     "SELECT ta.id FROM track_analysis ta LEFT JOIN library l ON l.id = ta.track_id WHERE l.id IS NULL"),
+     "SELECT ta.id FROM track_analysis ta LEFT JOIN library l ON l.id = ta.track_id WHERE l.id IS NULL ORDER BY ta.id"),
 ]
 
 
@@ -73,7 +88,7 @@ def check_orphans(ctx: DoctorContext) -> list[Finding]:
     queries = list(ORPHAN_QUERIES)
     if ctx.nested:
         queries.append(("crates.parent_id -> crates.id",
-                        "SELECT c.id FROM crates c LEFT JOIN crates p ON p.id = c.parent_id WHERE c.parent_id IS NOT NULL AND p.id IS NULL"))
+                        "SELECT c.id FROM crates c LEFT JOIN crates p ON p.id = c.parent_id WHERE c.parent_id IS NOT NULL AND p.id IS NULL ORDER BY c.id"))
     for relation, sql in queries:
         ids = _ids(ctx, sql)
         if ids:
@@ -138,9 +153,11 @@ def check_cues(ctx: DoctorContext) -> list[Finding]:
         findings.append(Finding("cues", "warning", f"{len(dup_rows)} (track, type, slot) combination(s) have duplicate cues",
                                 {"reason": "duplicate_slot", "count": len(dup_rows),
                                  "slots": [{"track_id": r[0], "type_id": r[1], "slot": r[2], "count": r[3]} for r in dup_rows[:SAMPLE]]}))
-    outside = _ids(ctx, "SELECT c.id FROM cues c JOIN library l ON l.id = c.track_id WHERE c.position < 0 OR "
+    outside = _ids(ctx, "SELECT c.id FROM cues c JOIN library l ON l.id = c.track_id WHERE c.position != ? AND ("
+                        "c.position < 0 OR "
                         "(l.duration IS NOT NULL AND l.samplerate IS NOT NULL AND l.channels IS NOT NULL AND "
-                        "c.position + c.length > l.duration * l.samplerate * l.channels) ORDER BY c.id")
+                        "c.position + c.length > l.duration * l.samplerate * l.channels + ?)) ORDER BY c.id",
+                   UNSET_POSITION, OUTSIDE_TRACK_TOLERANCE)
     if outside:
         findings.append(Finding("cues", "warning", f"{len(outside)} cue(s) lie outside their track",
                                 {"reason": "outside_track", "count": len(outside), "cue_ids": outside[:SAMPLE]}))

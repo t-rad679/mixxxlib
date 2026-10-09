@@ -69,3 +69,17 @@ def test_cycle_is_an_error_at_42(sandbox_42, manifest_42):
     cycles = [f for f in by_check(findings, "orphans") if f.details.get("relation") == "crates.parent_id cycle"]
     assert cycles and cycles[0].severity == "error"
     sandbox_42.__dict__["_skip_doctor"] = True
+
+
+def test_outside_track_ignores_the_unset_sentinel_but_still_flags_the_injected_anomaly(sandbox):
+    # Mixxx writes -1 as "not set" for a cue's position; the fixture carries 19 such sentinel cues
+    # (type 7 / outro). None of them is a real anomaly and none must be reported.
+    sentinel_ids = {row[0] for row in sandbox.query("SELECT id FROM cues WHERE position = -1")}
+    assert len(sentinel_ids) == 19
+    findings = sandbox.library().doctor()
+    outside = [f for f in by_check(findings, "cues") if f.details["reason"] == "outside_track"]
+    assert len(outside) == 1
+    reported_ids = set(outside[0].details["cue_ids"])
+    assert not reported_ids & sentinel_ids
+    # Task 6's deliberately-injected negative-position loop cue on track 818 must still be caught.
+    assert reported_ids == {4242}
