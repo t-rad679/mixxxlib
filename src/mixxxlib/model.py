@@ -138,7 +138,7 @@ class Location:
     filename: str | None
     directory: str | None
     filesize: int | None
-    fs_deleted: bool
+    fs_deleted: bool | None
 
 
 @dataclass(frozen=True)
@@ -157,7 +157,7 @@ class Metadata:
     rating: int | None
     color: int | None
     url: str | None
-    bpm_lock: bool
+    bpm_lock: bool | None
     bpm: float | None
     key: MusicalKey
 
@@ -177,11 +177,11 @@ class Audio:
 @dataclass(frozen=True)
 class Bookkeeping:
     datetime_added: str | None
-    played: bool
+    played: bool | None
     timesplayed: int | None
     last_played_at: str | None
-    mixxx_deleted: bool
-    header_parsed: bool
+    mixxx_deleted: bool | None
+    header_parsed: bool | None
     source_synchronized_ms: int | None
 
 

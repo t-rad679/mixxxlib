@@ -197,16 +197,18 @@ class TracksAPI:
         # migrated to. Cross-check the actual column, same defensive pattern as Library.doctor().
         return "tuning_frequency" in self._lib.schema.capabilities and schema_mod.has_column(conn, "library", "tuning_frequency_hz")
 
-    def list(self, *, crate: Crate | None = None, search: str | None = None, recursive: bool = False) -> list[Track]:
+    def list(self, *, crate: Crate | None = None, search: str | None = None,
+             recursive: bool = False) -> tuple[list[Track], list[WarningMessage]]:
+        """Tracks sorted by id, plus decode warnings aggregated by code (see db.tracks._aggregate_warnings)."""
         crate_ids = self._lib.crates.subtree_ids(crate, recursive=recursive) if crate is not None else None
         with self._lib.read() as conn:
             return tracks_sql.list_tracks(conn, has_tuning=self._has_tuning(conn), crate_ids=crate_ids, search=search)
 
-    def get(self, track_id: int) -> Track:
+    def get(self, track_id: int) -> tuple[Track, list[WarningMessage]]:
         with self._lib.read() as conn:
             return tracks_sql.get_track(conn, int(track_id), has_tuning=self._has_tuning(conn))
 
-    def get_by_path(self, path: str) -> Track:
+    def get_by_path(self, path: str) -> tuple[Track, list[WarningMessage]]:
         with self._lib.read() as conn:
             return tracks_sql.get_track_by_path(conn, path, has_tuning=self._has_tuning(conn))
 

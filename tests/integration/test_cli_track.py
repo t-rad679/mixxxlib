@@ -1,3 +1,6 @@
+import sqlite3
+from contextlib import closing
+
 import pytest
 
 TRACK_KEYS = ["id", "location", "metadata", "audio", "bookkeeping", "analysis", "coverart"]
@@ -81,3 +84,55 @@ def test_recursive_crate_listing_at_42(sandbox_42, manifest_42):
 def test_recursive_needs_41(sandbox):
     r = sandbox.run("track", "list", "--crate", "Fixture Loops", "--recursive", "--json")
     assert r.code == 6 and r.error["error"]["details"]["needs"] == 41
+
+
+def _write(sandbox, sql, *params):
+    """A read-write connection to the sandbox's (already-disposable, tmp_path) database copy.
+
+    `Sandbox.connect()` is deliberately read-only (spec §7.2); these tests force NULL/corrupted
+    values directly to exercise row_to_track's handling of data mixxxlib itself would never write.
+    """
+    with closing(sqlite3.connect(sandbox.db)) as conn:
+        conn.execute(sql, params)
+        conn.commit()
+
+
+def test_null_boolean_columns_stay_null(sandbox, manifest):
+    track_id = manifest["tracks"][0]
+    location_id = sandbox.scalar("SELECT location FROM library WHERE id = ?", track_id)
+    _write(sandbox, "UPDATE library SET played = NULL, mixxx_deleted = NULL, header_parsed = NULL, bpm_lock = NULL WHERE id = ?", track_id)
+    _write(sandbox, "UPDATE track_locations SET fs_deleted = NULL WHERE id = ?", location_id)
+
+    r = sandbox.run("track", "show", str(track_id), "--json")
+    assert r.code == 0
+    track = r.json["data"]["track"]
+    assert track["bookkeeping"]["played"] is None
+    assert track["bookkeeping"]["mixxx_deleted"] is None
+    assert track["bookkeeping"]["header_parsed"] is None
+    assert track["metadata"]["bpm_lock"] is None
+    assert track["location"]["fs_deleted"] is None
+
+
+def test_beatgrid_decode_warning_surfaces_on_show(sandbox, manifest):
+    track_id = manifest["tracks"][0]
+    _write(sandbox, "UPDATE library SET beats = ? WHERE id = ?", b"\xff\xff\xff\xff\xff", track_id)
+
+    r = sandbox.run("track", "show", str(track_id), "--json")
+    assert r.code == 0
+    assert r.json["data"]["track"]["analysis"]["beatgrid"]["decoded"] is False
+    warnings = r.json["warnings"]
+    assert [w["code"] for w in warnings] == ["beats_undecodable"]
+
+
+def test_beatgrid_decode_warnings_aggregate_on_list(sandbox, manifest):
+    corrupted = manifest["tracks"][:2]
+    for track_id in corrupted:
+        _write(sandbox, "UPDATE library SET beats = ? WHERE id = ?", b"\xff\xff\xff\xff\xff", track_id)
+
+    r = sandbox.run("track", "list", "--json")
+    assert r.code == 0
+    warnings = r.json["warnings"]
+    assert [w["code"] for w in warnings] == ["beats_undecodable"]
+    detail = warnings[0]["details"]
+    assert detail["count"] == len(corrupted)
+    assert sorted(detail["track_ids"]) == sorted(corrupted)

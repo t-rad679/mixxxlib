@@ -7,7 +7,7 @@ import typer
 from mixxxlib import output
 from mixxxlib.cli.common import PathsOption, command, global_options, open_library, parse_int
 from mixxxlib.library import Library
-from mixxxlib.model import Crate, Track
+from mixxxlib.model import Crate, Track, WarningMessage
 
 app = typer.Typer(no_args_is_help=True, help="Track metadata, analysis summary and cues.")
 
@@ -19,7 +19,8 @@ def resolve_crate(lib: Library, selector: str, *, by_id: bool, parent: str | Non
     return lib.crates.get(selector, parent=parent_crate)
 
 
-def resolve_track(lib: Library, selector: str, *, paths: bool) -> Track:
+def resolve_track(lib: Library, selector: str, *, paths: bool) -> tuple[Track, list[WarningMessage]]:
+    """Track plus any beatgrid-decode warnings for it (spec §6.4)."""
     if paths:
         return lib.tracks.get_by_path(selector)
     return lib.tracks.get(parse_int(selector, "track id"))
@@ -37,8 +38,8 @@ def list_(ctx: typer.Context,
     with command(ctx, "track list") as out:
         lib = open_library(ctx)
         crate_obj = resolve_crate(lib, crate, by_id=by_id, parent=parent) if crate else None
-        tracks = lib.tracks.list(crate=crate_obj, search=search, recursive=recursive)
-        out.emit(tracks, warnings=lib.read_warnings(), text=lambda: output.render_tracks(tracks))
+        tracks, decode_warnings = lib.tracks.list(crate=crate_obj, search=search, recursive=recursive)
+        out.emit(tracks, warnings=[*lib.read_warnings(), *decode_warnings], text=lambda: output.render_tracks(tracks))
 
 
 @app.command("show")
@@ -47,6 +48,6 @@ def show(ctx: typer.Context, track: Annotated[str, typer.Argument(metavar="TRACK
     """One track with its analysis summary and cues."""
     with command(ctx, "track show") as out:
         lib = open_library(ctx)
-        obj = resolve_track(lib, track, paths=paths)
+        obj, decode_warnings = resolve_track(lib, track, paths=paths)
         data = {"track": obj, "beatgrid": obj.analysis.beatgrid, "cues": []}
-        out.emit(data, warnings=lib.read_warnings(), text=lambda: output.render_track(obj))
+        out.emit(data, warnings=[*lib.read_warnings(), *decode_warnings], text=lambda: output.render_track(obj))
