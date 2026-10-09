@@ -1,8 +1,8 @@
 # mixxxctl — design spec
 
-**Date:** 2026-10-08
-**Status:** draft for review
-**Sources:** the Trilium note tree under *mixxxctl* (*Initial mixxxctl Brainstorm*, *mixxxctl Interface Contract*, *Testing mixxxctl Against Real Mixxx*, *Driving Mixxx While It Is Running*, *Mixxx Has No Nested Crates*, *CLI Library Choice: absl-py vs Typer*) and the linked *Beats Blob Decoder* component note. Facts marked **[verified]** in those notes were measured against a Mixxx 2.5.6 library at schema 39 on 2026-10-08; nothing measured there is treated as an invariant of Mixxx in general.
+**Date:** 2026-10-08, revised 2026-10-09
+**Status:** draft for review (revision 2)
+**Sources:** the Trilium note tree under *mixxxctl* (*Initial mixxxctl Brainstorm*, *mixxxctl Interface Contract*, *Testing mixxxctl Against Real Mixxx*, *Driving Mixxx While It Is Running*, *Mixxx Has No Nested Crates*, *CLI Library Choice: absl-py vs Typer*), the linked *Beats Blob Decoder* component note, and the review notes on revision 1. Facts marked **[verified]** in those notes were measured against a Mixxx 2.5.6 library at schema 39 on 2026-10-08; nothing measured there is treated as an invariant of Mixxx in general. Upstream facts about nested crates were read from the Mixxx GitHub repository on 2026-10-09.
 
 ## 1. Purpose
 
@@ -15,23 +15,26 @@ It fills a real gap: Mixxx 2.5.6 ships no library CLI at all, and existing third
 **In v1**
 
 - Crate CRUD, including membership and the `locked` / `show` / `autodj_source` flags.
-- Track metadata: every user-facing metadata field readable and writable, in the Mixxx database and in the audio file tags, with three fields writable under a documented caveat (§6.4).
+- Track metadata: every user-facing metadata field readable and writable in the Mixxx database and, by default, in the audio file tags as well. `--mixxx-only` confines a write to the database (§7.4). Three fields are writable under a documented caveat (§6.4).
 - Cue points: read and write.
 - Beatgrid and key: read only.
 - `doctor`: a pure-read health check that doubles as the regression harness.
 - Mixxx settings introspection (`mixxx.cfg`).
 - Automatic, pruned database backups before every mutation.
 
+**Prepared for, ahead of upstream**
+
+- **Nested crates.** Mixxx has no crate hierarchy today, but a live upstream PR adds one with a small, known schema change (§6.1). The v1 data model, command surface and schema guard are shaped so that supporting it is additive (§6.1, §8.2, §7.3). It is the first follow-on and outranks playlists.
+
 **Follow-on (not in v1)**
 
-- Playlist CRUD. The schema supports it, but playlists are ordered, inserts require renumbering, and the reference library has zero regular playlists. Nothing in v1 is designed in a way that blocks adding it.
+- Playlist CRUD, after nested crates. The schema supports it, but playlists are ordered, inserts require renumbering, and the reference library has zero regular playlists. Nothing in v1 blocks adding it.
 
 **Out of scope, permanently**
 
 - Writing the `library.beats` and `library.keys` blobs. A malformed protobuf blob is the clearest route to breaking the database.
 - Anything requiring Mixxx to be running, including live performance control over virtual MIDI. If wanted, that is a sibling component with the opposite contract.
 - Any semantics: classification schemes, colour conventions, naming rules, crate-generation logic. Those live in the caller.
-- Nested crates. Mixxx crates are flat; a caller that wants hierarchy projects it into flat names itself.
 
 ## 2. Standing constraints (the interface contract)
 
@@ -45,7 +48,7 @@ These apply to every command and every library call.
 6. **Importable as a library.** All business logic is callable without the CLI layer, and importing the package registers nothing global.
 7. **No semantics, only mechanism.** Values are validated for type, range and referential sanity, then written opaquely.
 8. **No hardcoded paths, no assumptions about library content** — not the music root, not file formats, not which Mixxx features are in use.
-9. **Degrade clearly on an unexpected schema.** Refuse to mutate above schema 40 and say why.
+9. **Degrade clearly on an unexpected schema.** Refuse to mutate above the supported ceiling and say why.
 10. **Safety is part of the interface** (§7): refuse to run while Mixxx is up, back up before mutating, one transaction per command, verify integrity afterwards, never enable `PRAGMA foreign_keys`.
 
 ## 3. Technology and distribution
@@ -56,8 +59,8 @@ These apply to every command and every library call.
 - **Dev dependencies:** `pytest`.
 - **Packaging:** a standard `pyproject.toml` with a `mixxxctl` console script and `python -m mixxxctl` entry point, `src/` layout. Install is `python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`. No lockfile tooling is required.
 - **Distribution target:** someone checks out the repo and uses it against their own Mixxx install. A README is required (§11). No badges, CI matrix or contribution apparatus.
-- **Vendored schema:** `res/schema.xml` from the Mixxx repository, pinned at revision 40, lives at `src/mixxxctl/vendor/schema.xml`. A test asserts the fixture database's tables and columns match it, so a Mixxx upgrade shows up as a visible diff rather than a surprise.
-- **Scripts** in the repo are zsh.
+- **Schema reference, not vendored.** Mixxx's `res/schema.xml` is not copied into the repo. `schema.py` records a permalink to the file at the Mixxx 2.5.6 release commit (`94ccc34f`, which carries revision 39; `main` carries 40) and the table and column sets `mixxxctl` relies on, which are the real contract. `scripts/check-schema-upstream.sh` fetches `main` and prints any revision above the ceiling, which is the "visible diff" a vendored copy was meant to provide.
+- **Scripts** that a human runs are POSIX `sh`. `bash` is used only where `sh` becomes ugly, and `zsh` only if `bash` does too. Anything with real logic is Python.
 
 ## 4. Exit codes and error shape
 
@@ -67,9 +70,9 @@ These apply to every command and every library call.
 | 1 | `internal` | Unexpected exception. Always a bug. |
 | 2 | `usage` | Bad arguments or flags (Click's default). |
 | 3 | `not_found` | A referenced crate, track, cue, file or backup does not exist. |
-| 4 | `validation` | Input refused before any write: bad type or range, name too long, duplicate name, occupied hotcue slot, locked crate, position outside track, unknown cue type, zero colour. |
+| 4 | `validation` | Input refused before any write: bad type or range, name too long, duplicate name among siblings, ambiguous crate name, occupied hotcue slot, locked crate, position outside track, unknown cue type, zero colour. |
 | 5 | `mixxx_running` | Mixxx is running, or the database is locked by another connection. |
-| 6 | `schema_unsupported` | Schema version above 40, or the version row is missing or unreadable. |
+| 6 | `schema_unsupported` | Schema version above the ceiling, below the revision a command needs (nested-crate commands below 41), or the version row is missing or unreadable. |
 | 7 | `database` | SQLite error, backup failure, or `integrity_check` not `ok` after commit. |
 | 8 | `confirmation_required` | A destructive command was run without `--yes`. |
 | 9 | `tag_error` | Audio file missing, unsupported format, or mutagen failed to read or write. |
@@ -113,6 +116,7 @@ Warnings are for things the caller should know about a *successful* command. Exi
 | Code | When |
 |---|---|
 | `blob_authoritative` | `bpm` or `key` was written; the paired blob is authoritative and Mixxx may discard the write (§6.4). |
+| `file_backed` | `--mixxx-only` wrote a field that Mixxx imports from the audio file; the file's value wins the next time Mixxx re-imports it (§6.2). |
 | `mixxx_running` | A read command ran while Mixxx is up; values may be stale. |
 | `no_file_tag` | A field was set that has no audio-file counterpart, so only the database changed. |
 | `already_member` / `not_member` | `crate add` / `crate remove` was a no-op for some ids (idempotent). |
@@ -128,11 +132,23 @@ All types live in `mixxxctl.model` as frozen dataclasses and are what the librar
 
 ### 6.1 Crate
 
-`crates`: `id`, `name` (varchar(48), unique, not null), `count`, `show`, `locked`, `autodj_source`. `crate_tracks`: `(crate_id, track_id)`, unique, **no position column** — crates are unordered sets. **[verified]**
+**At schema ≤ 40 (every released Mixxx):** `crates`: `id`, `name` (varchar(48), unique, not null), `count`, `show`, `locked`, `autodj_source`. `crate_tracks`: `(crate_id, track_id)`, unique, **no position column** — crates are unordered sets with no hierarchy. **[verified]**
 
 - `count` is vestigial; Mixxx 2.5 ignores it. `mixxxctl` never reads or writes it and reports a live `track_count` instead.
 - Names are validated to 1–48 characters before insert; SQLite does not enforce the length but Mixxx's UI assumes it.
 - A `locked` crate refuses membership changes and deletion with exit 4. The caller unlocks it first with `crate update --no-locked`. This mirrors what Mixxx's own UI enforces and is mechanism, not opinion.
+
+**Nested crates, as upstream is building them.** The only live implementation is Mixxx PR #16871 (draft, opened 2026-08-10, based on `mixxxdj/proposals#21`, waiting on six foundational PRs). The older PR #1304 was closed unmerged in July 2020. #16871's schema change is two revisions:
+
+- Revision 41: `ALTER TABLE crates ADD COLUMN parent_id INTEGER REFERENCES crates(id) DEFAULT NULL`.
+- Revision 42: rebuild `crates` with `UNIQUE (parent_id, name)` in place of the unique `name`. Root crates have `parent_id = NULL`.
+
+What v1 does about it now:
+
+- The `Crate` model carries `parent_id: int | None` and every crate JSON shape includes `"parent_id"`, always `null` below schema 41. Callers never see the shape change.
+- **Sibling uniqueness is enforced in application code.** SQLite treats `NULL` as distinct inside a UNIQUE constraint, so after revision 42 the database no longer prevents two root-level crates from sharing a name. `mixxxctl` refuses a duplicate name among siblings at every level, root included, with exit 4.
+- **No path syntax, no reserved characters.** A crate is addressed by name or `--id`; once nesting exists, a name that matches crates under different parents is ambiguous (exit 4) and `--parent CRATE` disambiguates. Imposing a separator on crate names would be a naming rule, which belongs to the caller.
+- Nested-crate commands exist in the surface (§8.2) and return exit 6 below schema 41. The schema ceiling stays at 40 until revisions 41 and 42 have been verified against a real database (§7.3), because the PR is a draft and its SQL may still change before merge.
 
 ### 6.2 Track
 
@@ -159,6 +175,8 @@ A track is a `library` row joined through `track_locations` on `library.location
 | `bpm_lock` | `bpm_lock` | bool | — | database only |
 | `bpm` | `bpm` | float | `TBPM` / `BPM` | **caveat §6.4** |
 | `key` | `key` + `key_id` | `MusicalKey` | `TKEY` / `INITIALKEY` | **caveat §6.4**; `key_id` is never set independently |
+
+Fields with a file tag are **file-backed**. Mixxx re-imports a file's tags whenever the file's modification time is newer than `library.source_synchronized_ms`, so for these fields the audio file is the source of truth and the database is Mixxx's cache of it. A database-only write (`--mixxx-only`) to a file-backed field therefore lasts until the next time the file changes; the command says so with a `file_backed` warning. The default two-store write (§7.4) has no such caveat because it updates both and refreshes the sync timestamp.
 
 **Read-only fields** (exposed in output, never written by `mixxxctl`): `id`, `location` (`id`, `path`, `filename`, `directory`, `filesize`, `fs_deleted`), `duration`, `bitrate`, `samplerate`, `channels`, `filetype`, `replaygain`, `replaygain_peak`, `datetime_added`, `played`, `timesplayed`, `last_played_at`, `mixxx_deleted`, `header_parsed`, `source_synchronized_ms`, `beats_version`, `beats_sub_version`, `keys_version`, `keys_sub_version`, cover-art columns, and `tuning_frequency_hz` where present (schema 40). This split — tag-like fields writable, bookkeeping and analysis read-only — is the interpretation of "all metadata fields" this spec commits to.
 
@@ -188,7 +206,7 @@ File-tag mapping by format: MP3 and AIFF carry ID3v2 (AIFF in its `ID3` chunk); 
 
 ### 6.5 Settings
 
-`mixxx.cfg` is plain INI. `settings show` parses it into `{section: {key: value}}`. The one setting that changes `mixxxctl` behaviour is none in v1; `SyncTrackMetadataExport` is surfaced because a caller may want to know whether Mixxx will propagate database edits to files (in the reference library it is `0`: it will not).
+`mixxx.cfg` is plain INI. `settings show` parses it into `{section: {key: value}}`. No setting changes `mixxxctl` behaviour in v1; `SyncTrackMetadataExport` is surfaced because a caller may want to know whether Mixxx will propagate database edits to files on its own (in the reference library it is `0`: it will not).
 
 ## 7. Safety protocol
 
@@ -208,33 +226,33 @@ Every read command opens `file:<path>?mode=ro` so it is incapable of mutation. R
 Every mutating command, in this order:
 
 1. **Resolve** the database path (§9) and open a read-write connection with a 1-second busy timeout.
-2. **Schema guard.** Read `settings.value WHERE key = 'mixxx.schema.version'`. Above 40, missing or unparsable → exit 6, naming the version found. Exactly 40 → proceed with a `schema_unverified` warning.
+2. **Schema guard.** Read `settings.value WHERE key = 'mixxx.schema.version'` and look it up in the capability table in `schema.py`, which maps each known revision to what it enables (`nested_crates` from 41, the `UNIQUE (parent_id, name)` rebuild from 42) and names the ceiling, 40. Above the ceiling, missing or unparsable → exit 6, naming the version found. Exactly 40 → proceed with a `schema_unverified` warning. A command that needs a capability the version lacks → exit 6, naming the revision it needs. Supporting a new revision means adding a row to the table and raising the ceiling after verification, not editing a constant in several places.
 3. **Mixxx-running guard.** Best-effort process check (`pgrep -x mixxx` where available), then the authoritative probe: `BEGIN IMMEDIATE` then `ROLLBACK`. Either failing → exit 5.
-4. **Validate** every input against the database inside a read transaction: ids exist, names fit, slots free, positions inside the track, colours non-zero, crate not locked. Any failure → exit 4 with details. Nothing has been written yet.
+4. **Validate** every input against the database inside a read transaction: ids exist, names fit, sibling names unique, slots free, positions inside the track, colours non-zero, crate not locked. Any failure → exit 4 with details. Nothing has been written yet.
 5. **Confirmation.** If the command is destructive (§7.5) and `--yes` is absent → exit 8.
 6. **Dry-run.** If `--dry-run`, print the statements and file operations and exit 0. No backup, no write.
 7. **Backup** with `VACUUM INTO '<backup path>'` — never `cp`, which can copy a torn page set. Failure → exit 7, nothing written.
-8. **File tags first**, if the command writes them (§7.4).
+8. **File tags first**, if the command writes them and `--mixxx-only` was not given (§7.4).
 9. **One transaction:** `BEGIN IMMEDIATE`, all statements, `COMMIT`. Any error → `ROLLBACK`, exit 7.
 10. **Verify:** `PRAGMA integrity_check`. Anything but `ok` → exit 7 with the backup path in the error details. Otherwise report the result in `mutation.integrity`.
 11. **Prune** old backups (§7.6).
 
 ### 7.4 Two-store writes
 
-For a metadata field with a file-tag counterpart, `track set` writes both stores by default. The only order that stays consistent if the process dies halfway is **file → re-read to confirm → database**, because a crash after the file write leaves the database merely stale, which a Mixxx rescan repairs, whereas database-first leaves the database asserting something the file does not.
+For a file-backed field, `track set` writes both stores by default. The only order that stays consistent if the process dies halfway is **file → re-read to confirm → database**, because a crash after the file write leaves the database merely stale, which Mixxx's own re-import repairs, whereas database-first leaves the database asserting something the file does not.
 
 1. Snapshot the file's current tag values to `<backup dir>/tags-<timestamp>-<track id>.json`.
 2. Write the tags with mutagen; re-open the file and confirm the values read back. Mismatch → restore from the snapshot, exit 9.
 3. Run the database transaction (§7.3 step 9), which also sets `library.source_synchronized_ms` to the file's new modification time in epoch milliseconds, so Mixxx does not conclude the file is unchanged and keep serving stale values.
 4. If the database step fails after the file was written, restore the file tags from the snapshot (best effort) and report both outcomes in the exit-7 error details.
 
-`--db-only` skips the file entirely; `--file-only` skips the database (and the backup). Fields with no file counterpart are database-only automatically, with a `no_file_tag` warning.
+**`--mixxx-only`** skips the file entirely and writes only the database. It is the flag for callers that leave audio files to another tool. For file-backed fields it adds the `file_backed` warning (§6.2); for database-only fields it changes nothing. **`--file-only`** skips the database (and the backup). Fields with no file counterpart are database-only automatically, with a `no_file_tag` warning.
 
 Mutagen is used directly rather than Mixxx's own export because Mixxx's MP3 tag export is reported broken since 2.5.0 and because Mixxx is closed anyway.
 
 ### 7.5 What counts as destructive
 
-`--yes` is required for any command that **deletes rows** or **writes to an audio file**. Database field updates and inserts do not require it, because the automatic backup makes them reversible; audio files have only the tag snapshot. Concretely: `crate delete`, `crate remove`, `crate set-tracks`, `cue delete`, `cue clear`, `backup restore`, and `track set` unless `--db-only`.
+`--yes` is required for any command that **deletes rows** or **writes to an audio file**. Database field updates and inserts do not require it, because the automatic backup makes them reversible; audio files have only the tag snapshot. Concretely: `crate delete`, `crate remove`, `crate set-tracks`, `cue delete`, `cue clear`, `backup restore`, and `track set` unless `--mixxx-only`.
 
 ### 7.6 Backups
 
@@ -256,29 +274,31 @@ Global options, accepted before or after the subcommand:
 
 Mutating commands additionally accept `--dry-run` and `--yes`.
 
-Crate selectors are names; `--id` makes the selector an integer id. Track selectors are integer ids; `--paths` makes them file paths resolved through `track_locations.location` after `os.path.abspath`. Cue selectors are cue ids.
+**Selectors.** Crates are addressed by name; `--id` makes the selector an integer id. Under nested crates a name that matches crates under different parents is ambiguous (exit 4) and `--parent CRATE` narrows it; there is no path syntax and no reserved character. Tracks are integer ids; `--paths` makes them file paths resolved through `track_locations.location` after `os.path.abspath`. Cues are cue ids.
 
 ### 8.1 `info` and `settings`
 
-- `info` — resolved paths, schema version and verdict, whether Mixxx is running, backup directory, `mixxxctl` version. Pure read. The first thing a caller or a human runs.
+- `info` — resolved paths, schema version, capabilities and verdict, whether Mixxx is running, backup directory, `mixxxctl` version. Pure read. The first thing a caller or a human runs.
 - `settings show [SECTION[.KEY]]` — contents of `mixxx.cfg`.
 
 ### 8.2 `crate`
 
 | Command | Effect | `data` |
 |---|---|---|
-| `crate list` | All crates. | `[{id, name, locked, show, autodj_source, track_count}]` |
-| `crate show CRATE [--tracks]` | One crate, optionally with its tracks (§8.3 track shape, no cues). | `{crate, tracks?}` |
-| `crate create NAME` | Insert; duplicate name → exit 4. | `{crate}` |
+| `crate list [--parent CRATE \| --root]` | All crates; with nesting, optionally one level. | `[{id, name, parent_id, locked, show, autodj_source, track_count}]` |
+| `crate show CRATE [--tracks] [--recursive]` | One crate, optionally with its tracks; `--recursive` includes descendants' tracks (schema ≥ 41), matching Mixxx's recursive view. | `{crate, tracks?}` |
+| `crate tree` | The hierarchy as nested objects (schema ≥ 41); a flat list of roots below. | `[{crate, children: [...]}]` |
+| `crate create NAME [--parent CRATE]` | Insert; duplicate name among siblings → exit 4. `--parent` needs schema ≥ 41. | `{crate}` |
 | `crate rename CRATE NEW_NAME` | | `{crate}` |
+| `crate move CRATE --parent CRATE \| --root` | Re-parent a crate and its subtree (schema ≥ 41). Refuses a cycle with exit 4. | `{crate}` |
 | `crate update CRATE [--locked/--no-locked] [--show/--no-show] [--autodj-source/--no-autodj-source]` | Flags only. | `{crate}` |
-| `crate delete CRATE --yes` | Deletes the crate and its `crate_tracks` rows. | `{deleted: {crate, track_count}}` |
+| `crate delete CRATE --yes [--recursive]` | Deletes the crate and its `crate_tracks` rows. A crate with children is refused (exit 4) unless `--recursive`, which deletes the subtree. | `{deleted: [{crate, track_count}]}` |
 | `crate add CRATE TRACK... [--paths] [--stdin]` | Idempotent membership add; unknown track → exit 4 before any write. | `{crate, added: [ids], already_member: [ids]}` |
 | `crate remove CRATE TRACK... --yes [--paths] [--stdin]` | Idempotent removal. | `{crate, removed: [ids], not_member: [ids]}` |
 | `crate set-tracks CRATE [TRACK...] --yes [--paths] [--stdin]` | Make membership exactly this set. | `{crate, added, removed, unchanged}` |
-| `crate export CRATE [--format m3u8]` | `#EXTM3U` with `#EXTINF:<seconds>,<artist> - <title>` lines and absolute paths, to stdout; a correctness oracle against Mixxx's own exporter. | playlist text on stdout; `--json` is ignored |
+| `crate export CRATE [--format m3u8] [--recursive]` | `#EXTM3U` with `#EXTINF:<seconds>,<artist> - <title>` lines and absolute paths, to stdout; a correctness oracle against Mixxx's own exporter. | playlist text on stdout; `--json` is ignored |
 
-`--stdin` reads one selector per line; the only way to pass thousands of ids portably.
+`--stdin` reads one selector per line; the only way to pass thousands of ids portably. Membership is per crate: a parent crate's own `crate_tracks` rows are what `add`, `remove` and `set-tracks` touch, and `--recursive` on the read side is how a caller sees the union, exactly as Mixxx shows it.
 
 ### 8.3 `track`
 
@@ -286,8 +306,7 @@ Crate selectors are names; `--id` makes the selector an integer id. Track select
 |---|---|---|
 | `track list [--crate CRATE] [--search TEXT]` | All tracks, or those in a crate, or those whose artist/title/album contains TEXT (case-insensitive `LIKE`, escaped). | `[{track}]` |
 | `track show TRACK` | One track with analysis summary and cues. | `{track, beatgrid, cues}` |
-| `track tags TRACK` | Audio-file tag values beside database values, with a `diff` list of fields that disagree. | `{track_id, path, file: {...}, db: {...}, diff: [field]}` |
-| `track set TRACK FIELD=VALUE... [--clear FIELD]... [--db-only \| --file-only] [--yes]` | Write metadata (§7.4). `--clear` sets NULL in the database and removes the tag from the file. | `{track, changed: {field: {old, new}}, file_written: bool}` |
+| `track set TRACK FIELD=VALUE... [--clear FIELD]... [--mixxx-only \| --file-only] [--yes]` | Write metadata (§7.4). `--clear` sets NULL in the database and removes the tag from the file. `--yes` is needed only when the file is written. | `{track, changed: {field: {old, new}}, file_written: bool}` |
 
 Track shape:
 
@@ -336,10 +355,11 @@ Pure read. Runs every check, prints findings, exits 0 when clean, 10 when any er
 
 | Check | Severity | What |
 |---|---|---|
-| `schema` | error above 40, warning at 40 | version and verdict |
+| `schema` | error above the ceiling, warning at 40 | version, capabilities and verdict |
 | `mixxx_running` | info | process and lock probe |
 | `integrity` | error | `PRAGMA integrity_check` |
-| `orphans` | error | semantic FK scan, since real FK checking is unusable: `crate_tracks` → `crates`/`library`; `cues` → `library`; `PlaylistTracks` → `Playlists`/`library`; `library.location` → `track_locations.id`; `track_analysis.track_id` → `library.id` |
+| `orphans` | error | semantic FK scan, since real FK checking is unusable: `crate_tracks` → `crates`/`library`; `cues` → `library`; `PlaylistTracks` → `Playlists`/`library`; `library.location` → `track_locations.id`; `track_analysis.track_id` → `library.id`; and from schema 41, `crates.parent_id` → `crates.id` plus a cycle check |
+| `crates` | warning | duplicate names among siblings (from schema 42, where the database no longer catches the root level) |
 | `missing_files` | warning | `fs_deleted = 1`, or `location` that does not exist on disk |
 | `unanalyzed` | info | `beats IS NULL` or `bpm = 0` |
 | `cues` | warning | hotcues with colour 0, duplicate `(track, type, slot)`, positions beyond duration, unknown types |
@@ -376,14 +396,14 @@ A database that does not exist at the resolved path → exit 3, with the path in
 src/mixxxctl/
   __init__.py          # __version__, Library re-export
   __main__.py          # python -m mixxxctl
-  model.py             # Crate, Track, Cue, Beatgrid, MusicalKey, Finding (frozen dataclasses)
+  model.py             # Crate (with parent_id), Track, Cue, Beatgrid, MusicalKey, Finding (frozen dataclasses)
   errors.py            # MixxxctlError(code, exit_code, details) and subclasses, one per §4 row
   paths.py             # settings/db/backup resolution (§9)
   library.py           # Library.open(...) — the public API façade
   db/
     connection.py      # open_ro(), mutation() context manager implementing §7.3
-    schema.py          # SCHEMA_MAX = 40, column sets, version read
-    crates.py          # all SQL for crates
+    schema.py          # capability table by revision, SCHEMA_CEILING = 40, SCHEMA_SOURCE permalink, column sets
+    crates.py          # all SQL for crates, sibling-uniqueness and cycle checks
     tracks.py          # all SQL for library + track_locations
     cues.py            # all SQL for cues, slot/position validation
   blobs/
@@ -398,11 +418,10 @@ src/mixxxctl/
   cli/
     __init__.py        # root Typer app, global options, error → exit code mapping
     crate.py  track.py  cue.py  doctor.py  backup.py  settings.py
-  vendor/
-    schema.xml         # Mixxx res/schema.xml pinned at revision 40
 scripts/
-  sandbox-mixxx.zsh    # §12.3 live harness
-  make-fixture.py      # trims a real database copy into tests/fixtures
+  sandbox-mixxx.sh         # §12.3 live harness (POSIX sh)
+  check-schema-upstream.sh # fetch main's schema.xml, print revisions above the ceiling (POSIX sh)
+  make-fixture.py          # trims a real database copy into tests/fixtures
 tests/
 docs/superpowers/specs/
 README.md  pyproject.toml
@@ -414,24 +433,27 @@ README.md  pyproject.toml
 from mixxxctl import Library
 
 lib = Library.open(settings_path=None, db=None, backup_dir=None)
-lib.crates.list() -> list[Crate]
-lib.crates.get(name_or_id) -> Crate
-lib.crates.create(name) -> Crate
+lib.crates.list(parent=None) -> list[Crate]
+lib.crates.get(name_or_id, parent=None) -> Crate
+lib.crates.tree() -> list[CrateNode]
+lib.crates.create(name, *, parent=None) -> Crate
+lib.crates.move(crate, *, parent) -> MutationResult          # schema >= 41
 lib.crates.add(crate, track_ids, *, dry_run=False) -> MutationResult
-lib.tracks.list(crate=None, search=None) -> list[Track]
+lib.tracks.list(crate=None, search=None, recursive=False) -> list[Track]
 lib.tracks.get(id_or_path) -> Track
-lib.tracks.set(track, fields: dict, *, db=True, file=True, dry_run=False) -> MutationResult
+lib.tracks.set(track, fields: dict, *, file=True, dry_run=False) -> MutationResult   # file=False is --mixxx-only
 lib.cues.list(track) -> list[Cue]
 lib.cues.add(track, type, position_samples, color, *, slot=None, length=0.0, label="") -> MutationResult
 lib.doctor() -> list[Finding]
 lib.settings -> dict[str, dict[str, str]]
+lib.schema -> SchemaInfo   # version, capabilities, ceiling
 ```
 
-Every mutating method runs the full §7.3 protocol and returns a `MutationResult` (`backup`, `integrity`, `statements`, `warnings`, plus the command-specific payload). Errors are the `errors.py` subclasses; `confirmation_required` exists only in the CLI, because a library caller has already decided. The CLI maps each exception class to its exit code in exactly one place.
+Every mutating method runs the full §7.3 protocol and returns a `MutationResult` (`backup`, `integrity`, `statements`, `warnings`, plus the command-specific payload). Errors are the `errors.py` subclasses; `confirmation_required` exists only in the CLI, because a library caller has already decided. The CLI maps each exception class to its exit code in exactly one place. `Library.open` accepts a `schema_ceiling` override for tests only; the CLI never exposes it.
 
 ## 11. README
 
-Required sections, in this order: what it does and does not do; install; the safety rules (Mixxx must be closed; backups are automatic and where they live; foreign keys are broken upstream and must never be enabled; schema 40 ceiling); the command surface with one example per group; the JSON envelope and exit-code table; the three caveated fields; path discovery; running the tests and the live harness.
+Required sections, in this order: what it does and does not do; install; the safety rules (Mixxx must be closed; backups are automatic and where they live; foreign keys are broken upstream and must never be enabled; the schema ceiling); the command surface with one example per group; the JSON envelope and exit-code table; the three caveated fields and the `--mixxx-only` caveat; nested crates: what is prepared and what waits on upstream; path discovery; running the tests and the live harness.
 
 ## 12. Testing
 
@@ -443,17 +465,17 @@ Required sections, in this order: what it does and does not do; install; the saf
 
 ### 12.2 Layers
 
-**Committed fixture.** `tests/fixtures/mixxxdb.sqlite`: a real database trimmed by `scripts/make-fixture.py` to about twenty tracks, with `track_locations` rewritten to point at `tests/fixtures/audio/` — one-second silent AIFF, MP3 and FLAC files with known tags. The fixture keeps the original DDL verbatim, including the broken foreign-key declarations, fractional cue positions, a `color = 0` hotcue, a duplicate hotcue slot, a track with `key`/`key_id` out of step, and an unanalyzed track, so `doctor` has something to find.
+**Committed fixtures.** `tests/fixtures/mixxxdb.sqlite`: a real database trimmed by `scripts/make-fixture.py` to about twenty tracks, with `track_locations` rewritten to point at `tests/fixtures/audio/` — one-second silent AIFF, MP3 and FLAC files with known tags. The fixture keeps the original DDL verbatim, including the broken foreign-key declarations, fractional cue positions, a `color = 0` hotcue, a duplicate hotcue slot, a track with `key`/`key_id` out of step, and an unanalyzed track, so `doctor` has something to find. A second fixture, `mixxxdb-42.sqlite`, is derived from the first by applying revisions 41 and 42 exactly as PR #16871 writes them, with a three-level crate tree and two root crates sharing a name; it is regenerated when the PR's SQL changes.
 
-**Unit tests** (no database): beatgrid decoder golden test against every blob in the fixture (BPM must equal `library.bpm`); the factor-of-two test asserting a known cue's seconds and a known beatgrid's seconds explicitly; `MusicalKey` parsing and round-trip; colour parsing; exit-code mapping; path precedence.
+**Unit tests** (no database): beatgrid decoder golden test against every blob in the fixture (BPM must equal `library.bpm`); the factor-of-two test asserting a known cue's seconds and a known beatgrid's seconds explicitly; `MusicalKey` parsing and round-trip; colour parsing; exit-code mapping; path precedence; the capability table.
 
-**Integration tests** (fresh copy of the fixture per test): every command, both output modes; every validation rejection in §8.4 and §6.1; the schema guard refusing 41 and naming it; the lock probe refusing while another connection holds `BEGIN EXCLUSIVE`; backup creation, naming and retention floor; two-store write order, including a simulated database failure after the file write; `--dry-run` producing no backup and no change. **Every integration test ends by running `doctor` and asserting no new errors.**
+**Integration tests** (fresh copy of a fixture per test): every command, both output modes; every validation rejection in §8.4 and §6.1; the schema guard refusing 41 on the ceiling of 40 and naming it; nested-crate commands returning exit 6 on the schema-39 fixture and working on the schema-42 fixture with the test-only ceiling override, including sibling uniqueness at the root and cycle refusal; the lock probe refusing while another connection holds `BEGIN EXCLUSIVE`; backup creation, naming and retention floor; two-store write order, including a simulated database failure after the file write; `--mixxx-only` leaving the file untouched and emitting `file_backed`; `--dry-run` producing no backup and no change. **Every integration test ends by running `doctor` and asserting no new errors.**
 
-**Schema pin:** the fixture's tables and columns equal the vendored `schema.xml` at revision 40.
+**Schema pin:** the schema-39 fixture's tables and columns equal the column sets in `schema.py`. `scripts/check-schema-upstream.sh` is a manual, network-using check and is not part of the test run.
 
 ### 12.3 Live Mixxx harness (manual, Linux)
 
-`scripts/sandbox-mixxx.zsh` reproduces the verified recipe: recreate `/tmp/mixxx-sandbox`, copy the database and `mixxx.cfg` in, apply the test writes with `mixxxctl --settings-path /tmp/mixxx-sandbox --backup-dir /tmp/mixxx-sandbox/backups`, launch `QT_QPA_PLATFORM=xcb mixxx --settings-path /tmp/mixxx-sandbox --safe-mode <track>`, screenshot via `xdotool` and `import`, `SIGTERM`, then diff the sandbox database (row values, ids **and** `sqlite_sequence`) against the pre-launch snapshot. Known noise: ALSA errors, a missing `samplers.xml` warning, and one new history row in `Playlists` per launch. A `SIGTERM` result proves Mixxx did not clobber the rows, not that it re-saved them on a clean shutdown; that remains an open question.
+`scripts/sandbox-mixxx.sh` reproduces the verified recipe: recreate `/tmp/mixxx-sandbox`, copy the database and `mixxx.cfg` in, apply the test writes with `mixxxctl --settings-path /tmp/mixxx-sandbox --backup-dir /tmp/mixxx-sandbox/backups`, launch `QT_QPA_PLATFORM=xcb mixxx --settings-path /tmp/mixxx-sandbox --safe-mode <track>`, screenshot via `xdotool` and `import`, `SIGTERM`, then diff the sandbox database (row values, ids **and** `sqlite_sequence`) against the pre-launch snapshot. Known noise: ALSA errors, a missing `samplers.xml` warning, and one new history row in `Playlists` per launch. A `SIGTERM` result proves Mixxx did not clobber the rows, not that it re-saved them on a clean shutdown; that remains an open question.
 
 The harness has already established that externally written hotcues load, render in the written colours and survive byte-identical, that `color = 0` hotcues are discarded, and that duplicate slots are resolved by dropping one.
 
@@ -463,6 +485,7 @@ These are known and deliberately not blocking v1:
 
 - Clean-shutdown cue behaviour in Mixxx is unproven (the harness could not trigger a graceful quit under the compositor).
 - Schema 40 is allowed sight-unseen; its only migration is one additive nullable column. Re-confirm on the first Mixxx release that ships it.
+- PR #16871 is a draft. Revisions 41 and 42 are prepared for as written today; when the PR merges, re-read its SQL, regenerate the schema-42 fixture, verify against a real migrated database, then raise the ceiling.
 - Whether Mixxx masks the alpha byte of a 32-bit colour or rejects it is settled by the first live harness run (§6.3).
 - MainCue writes wait on verifying the `library.cuepoint` mirror.
-- Playlist CRUD is the first follow-on.
+- Playlist CRUD follows nested crates.
