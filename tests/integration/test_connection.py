@@ -1,5 +1,6 @@
 import sqlite3
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -111,8 +112,9 @@ def test_schema_guard_refuses_41_on_ceiling_40(sandbox, manifest):
 
 
 class RecordingAction:
-    def __init__(self, name, fail=False):
-        self.name, self.fail, self.applied, self.rolled_back = name, fail, False, False
+    def __init__(self, name, fail=False, fail_rollback=False):
+        self.name, self.fail, self.fail_rollback = name, fail, fail_rollback
+        self.applied, self.rolled_back = False, False
 
     def describe(self):
         return f"write {self.name}"
@@ -124,6 +126,8 @@ class RecordingAction:
         return {"mtime_ms": 1234}
 
     def rollback(self):
+        if self.fail_rollback:
+            raise RuntimeError(f"{self.name} rollback failed")
         self.rolled_back = True
 
 
@@ -168,3 +172,57 @@ def test_database_failure_after_file_write_restores_the_file(sandbox, manifest):
         c.run_mutation(conn, label="track set", backup_dir=sandbox.backup_dir, build=build, schema_ceiling=40, process_check=NEVER_RUNNING)
     assert action.rolled_back
     assert e.value.details["file_rollback"] == ["write one"]
+
+
+def test_rollback_failure_after_a_database_failure_names_the_action_but_keeps_the_original_error(sandbox, manifest):
+    action = RecordingAction("broken", fail_rollback=True)
+
+    def build(conn):
+        return c.MutationPlan(statements=[c.Statement("INSERT INTO no_such_table VALUES (1)")], file_actions=[action])
+
+    conn = c.open_rw(sandbox.db)
+    with pytest.raises(DatabaseError) as e:
+        c.run_mutation(conn, label="track set", backup_dir=sandbox.backup_dir, build=build, schema_ceiling=40, process_check=NEVER_RUNNING)
+    # the original database error still propagates, with its own code/exit_code, not something a
+    # failed rollback replaced
+    assert e.value.code == "database" and e.value.exit_code == 7
+    assert not action.rolled_back
+    assert e.value.details["file_rollback"] == []
+    assert e.value.details["file_rollback_failed"] == ["write broken"]
+    assert e.value.details["backup"].endswith(".sqlite")
+
+
+def test_tag_error_during_file_actions_names_the_backup_already_taken(sandbox, manifest):
+    action = RecordingAction("explodes", fail=True)
+
+    def build(conn):
+        return c.MutationPlan(statements=[c.Statement("UPDATE crates SET name = 'X' WHERE id = ?", (manifest["crates"]["loops"],))],
+                              file_actions=[action])
+
+    conn = c.open_rw(sandbox.db)
+    with pytest.raises(TagError) as e:
+        c.run_mutation(conn, label="track set", backup_dir=sandbox.backup_dir, build=build, schema_ceiling=40, process_check=NEVER_RUNNING)
+    backup = e.value.details["backup"]
+    assert backup is not None and Path(backup).is_file()
+    assert sandbox.scalar("SELECT name FROM crates WHERE id = ?", manifest["crates"]["loops"]) == "Fixture Loops"
+
+
+def test_multiple_file_actions_roll_back_in_reverse_order(sandbox, manifest):
+    order = []
+
+    class OrderedAction(RecordingAction):
+        def rollback(self):
+            order.append(self.name)
+            super().rollback()
+
+    first, second, third = OrderedAction("one"), OrderedAction("two"), OrderedAction("three", fail=True)
+
+    def build(conn):
+        return c.MutationPlan(statements=[c.Statement("UPDATE crates SET name = 'X' WHERE id = ?", (manifest["crates"]["loops"],))],
+                              file_actions=[first, second, third])
+
+    conn = c.open_rw(sandbox.db)
+    with pytest.raises(TagError):
+        c.run_mutation(conn, label="track set", backup_dir=sandbox.backup_dir, build=build, schema_ceiling=40, process_check=NEVER_RUNNING)
+    assert order == ["two", "one"]
+    assert first.rolled_back and second.rolled_back and not third.applied

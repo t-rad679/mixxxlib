@@ -139,6 +139,19 @@ def _try_rollback(action: FileAction) -> bool:
         return False
 
 
+def _rollback_all(applied: list[FileAction]) -> tuple[list[str], list[str]]:
+    """Roll back every applied file action, reverse-of-applied. Returns (restored, failed) descriptions.
+
+    A failed rollback must never replace or mask the error already in flight — the caller attaches
+    these lists to that error's details instead of raising anew.
+    """
+    restored: list[str] = []
+    failed: list[str] = []
+    for action in reversed(applied):
+        (restored if _try_rollback(action) else failed).append(action.describe())
+    return restored, failed
+
+
 def run_mutation(
     conn: sqlite3.Connection,
     *,
@@ -185,9 +198,13 @@ def run_mutation(
         for action in plan.file_actions:
             results.update(action.apply())
             applied.append(action)
-    except TagError:
-        for action in reversed(applied):
-            _try_rollback(action)
+    except TagError as exc:
+        restored, failed = _rollback_all(applied)
+        exc.details["file_rollback"] = restored
+        if failed:
+            exc.details["file_rollback_failed"] = failed
+        if backup_path is not None:
+            exc.details["backup"] = str(backup_path)
         raise
     # 9. one transaction
     integrity: str | None = None
@@ -202,9 +219,11 @@ def run_mutation(
                 conn.execute("ROLLBACK")
             except sqlite3.Error:
                 pass
-            restored = [a.describe() for a in reversed(applied) if _try_rollback(a)]
+            restored, failed = _rollback_all(applied)
             err = exc if isinstance(exc, DatabaseError) else translate(exc)
             err.details.update(backup=str(backup_path), file_rollback=restored)
+            if failed:
+                err.details["file_rollback_failed"] = failed
             raise err from exc
         # 10. verify
         integrity = integrity_check(conn)
