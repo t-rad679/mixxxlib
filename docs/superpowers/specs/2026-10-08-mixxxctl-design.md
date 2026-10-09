@@ -1,7 +1,7 @@
 # mixxxctl — design spec
 
 **Date:** 2026-10-08, revised 2026-10-09
-**Status:** draft for review (revision 2)
+**Status:** draft for review (revision 3)
 **Sources:** the Trilium note tree under *mixxxctl* (*Initial mixxxctl Brainstorm*, *mixxxctl Interface Contract*, *Testing mixxxctl Against Real Mixxx*, *Driving Mixxx While It Is Running*, *Mixxx Has No Nested Crates*, *CLI Library Choice: absl-py vs Typer*), the linked *Beats Blob Decoder* component note, and the review notes on revision 1. Facts marked **[verified]** in those notes were measured against a Mixxx 2.5.6 library at schema 39 on 2026-10-08; nothing measured there is treated as an invariant of Mixxx in general. Upstream facts about nested crates were read from the Mixxx GitHub repository on 2026-10-09.
 
 ## 1. Purpose
@@ -56,9 +56,10 @@ These apply to every command and every library call.
 - **Python ≥ 3.12.** `sqlite3` is in the standard library; the beatgrid decoder is pure Python.
 - **Typer** for the CLI. Decided. Subcommands are functions with typed parameters and nothing is process-global, which is what makes constraint 6 achievable. `absl-py` was rejected because its flags are global mutable state that would leak into any importer.
 - **Runtime dependencies:** `typer`, `mutagen`. Nothing else. No `protobuf`, no ORM, no `rich`-dependent output.
-- **Dev dependencies:** `pytest`.
-- **Packaging:** a standard `pyproject.toml` with a `mixxxctl` console script and `python -m mixxxctl` entry point, `src/` layout. Install is `python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`. No lockfile tooling is required.
-- **Distribution target:** someone checks out the repo and uses it against their own Mixxx install. A README is required (§11). No badges, CI matrix or contribution apparatus.
+- **Dev dependencies:** `pytest`, `shiv`.
+- **Packaging:** a standard `pyproject.toml` with a `mixxxctl` console script and `python -m mixxxctl` entry point, `src/` layout. The developer install is `python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'`. No lockfile tooling is required.
+- **Distribution artifact: a single-file zipapp.** `scripts/build-zipapp.sh` runs `shiv -c mixxxctl -o dist/mixxxctl .`, producing one executable file that bundles the package, Typer and mutagen behind a `#!/usr/bin/env python3` shebang. The user copies it anywhere on `PATH`, marks it executable and runs `mixxxctl …` like a binary; the only thing the target machine needs is Python ≥ 3.12. Both dependencies are pure Python, so one build serves every platform. On first run shiv unpacks the bundle into `~/.shiv/` and reuses it afterwards; `dist/` is git-ignored. A true interpreter-embedding binary (PyInstaller, Nuitka) is deliberately not built: it would need one build per OS and architecture for a gain that only matters on a machine with no Python at all.
+- **Distribution target:** someone either downloads the zipapp or checks out the repo and builds it, then uses it against their own Mixxx install. A README is required (§11). No badges, CI matrix or contribution apparatus.
 - **Schema reference, not vendored.** Mixxx's `res/schema.xml` is not copied into the repo. `schema.py` records a permalink to the file at the Mixxx 2.5.6 release commit (`94ccc34f`, which carries revision 39; `main` carries 40) and the table and column sets `mixxxctl` relies on, which are the real contract. `scripts/check-schema-upstream.sh` fetches `main` and prints any revision above the ceiling, which is the "visible diff" a vendored copy was meant to provide.
 - **Scripts** that a human runs are POSIX `sh`. `bash` is used only where `sh` becomes ugly, and `zsh` only if `bash` does too. Anything with real logic is Python.
 
@@ -419,9 +420,11 @@ src/mixxxctl/
     __init__.py        # root Typer app, global options, error → exit code mapping
     crate.py  track.py  cue.py  doctor.py  backup.py  settings.py
 scripts/
+  build-zipapp.sh          # shiv -c mixxxctl -o dist/mixxxctl . (POSIX sh)
   sandbox-mixxx.sh         # §12.3 live harness (POSIX sh)
   check-schema-upstream.sh # fetch main's schema.xml, print revisions above the ceiling (POSIX sh)
   make-fixture.py          # trims a real database copy into tests/fixtures
+dist/                      # build output, git-ignored
 tests/
 docs/superpowers/specs/
 README.md  pyproject.toml
@@ -453,7 +456,7 @@ Every mutating method runs the full §7.3 protocol and returns a `MutationResult
 
 ## 11. README
 
-Required sections, in this order: what it does and does not do; install; the safety rules (Mixxx must be closed; backups are automatic and where they live; foreign keys are broken upstream and must never be enabled; the schema ceiling); the command surface with one example per group; the JSON envelope and exit-code table; the three caveated fields and the `--mixxx-only` caveat; nested crates: what is prepared and what waits on upstream; path discovery; running the tests and the live harness.
+Required sections, in this order: what it does and does not do; install, with the zipapp first (download or build `dist/mixxxctl`, `chmod +x`, put it on `PATH`; Python ≥ 3.12 is the only requirement) and the editable venv second as the developer path; the safety rules (Mixxx must be closed; backups are automatic and where they live; foreign keys are broken upstream and must never be enabled; the schema ceiling); the command surface with one example per group; the JSON envelope and exit-code table; the three caveated fields and the `--mixxx-only` caveat; nested crates: what is prepared and what waits on upstream; path discovery; running the tests and the live harness.
 
 ## 12. Testing
 
@@ -470,6 +473,8 @@ Required sections, in this order: what it does and does not do; install; the saf
 **Unit tests** (no database): beatgrid decoder golden test against every blob in the fixture (BPM must equal `library.bpm`); the factor-of-two test asserting a known cue's seconds and a known beatgrid's seconds explicitly; `MusicalKey` parsing and round-trip; colour parsing; exit-code mapping; path precedence; the capability table.
 
 **Integration tests** (fresh copy of a fixture per test): every command, both output modes; every validation rejection in §8.4 and §6.1; the schema guard refusing 41 on the ceiling of 40 and naming it; nested-crate commands returning exit 6 on the schema-39 fixture and working on the schema-42 fixture with the test-only ceiling override, including sibling uniqueness at the root and cycle refusal; the lock probe refusing while another connection holds `BEGIN EXCLUSIVE`; backup creation, naming and retention floor; two-store write order, including a simulated database failure after the file write; `--mixxx-only` leaving the file untouched and emitting `file_backed`; `--dry-run` producing no backup and no change. **Every integration test ends by running `doctor` and asserting no new errors.**
+
+**Zipapp smoke test:** build `dist/mixxxctl` with `scripts/build-zipapp.sh` into a temporary directory and run `info --json` and `doctor --json` through it against the schema-39 fixture, asserting the envelope parses and the exit codes match the venv run. This is the only test that touches the distribution artifact, and it is what catches a dependency that shiv cannot bundle.
 
 **Schema pin:** the schema-39 fixture's tables and columns equal the column sets in `schema.py`. `scripts/check-schema-upstream.sh` is a manual, network-using check and is not part of the test run.
 
