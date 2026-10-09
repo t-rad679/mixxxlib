@@ -40,9 +40,16 @@ def default_backup_dir(*, home: Path, environ: Mapping[str, str]) -> Path:
 
 
 def _expand(value: str, *, home: Path) -> Path:
-    """Expand a leading ``~`` against the injected ``home``, never the real process HOME."""
-    if value.startswith("~"):
-        return Path(value.replace("~", str(home), 1))
+    """Expand a bare ``~`` or ``~/...`` against the injected ``home``.
+
+    Never the real process HOME, and never a ``~user`` form — resolving another
+    user's home would require a ``pwd`` lookup, which is exactly the real-environment
+    read this function exists to avoid.
+    """
+    if value == "~":
+        return home
+    if value.startswith("~/"):
+        return home / value[2:]
     return Path(value)
 
 

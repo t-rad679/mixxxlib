@@ -49,6 +49,29 @@ def test_tilde_is_expanded():
     assert r.db == HOME / "db.sqlite"
 
 
+def test_bare_tilde_is_expanded():
+    r = resolve(db="~", environ={}, platform="linux", home=HOME)
+    assert r.db == HOME
+
+
+def test_other_user_tilde_is_left_unexpanded():
+    # ~alice means "alice's home dir" via a pwd lookup, which is exactly the
+    # real-environment read resolve() must not perform. Leave it verbatim
+    # rather than mangling it against the injected home.
+    r = resolve(db="~alice/db.sqlite", environ={}, platform="linux", home=HOME)
+    assert r.db == Path("~alice/db.sqlite")
+
+
+def test_no_tilde_value_is_left_verbatim():
+    r = resolve(db="/no/tilde/here.sqlite", environ={}, platform="linux", home=HOME)
+    assert r.db == Path("/no/tilde/here.sqlite")
+
+
+def test_tilde_not_at_start_is_left_alone():
+    r = resolve(db="/foo/~bar", environ={}, platform="linux", home=HOME)
+    assert r.db == Path("/foo/~bar")
+
+
 def test_macos_prefers_container_dir_when_present(tmp_path):
     container = tmp_path / "Library/Containers/org.mixxx.mixxx/Data/Library/Application Support/Mixxx"
     r = resolve(environ={}, platform="darwin", home=tmp_path)
