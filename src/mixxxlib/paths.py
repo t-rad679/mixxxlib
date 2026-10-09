@@ -39,8 +39,11 @@ def default_backup_dir(*, home: Path, environ: Mapping[str, str]) -> Path:
     return base / "mixxxlib" / "backups"
 
 
-def _expand(value: str) -> Path:
-    return Path(os.path.expanduser(value))
+def _expand(value: str, *, home: Path) -> Path:
+    """Expand a leading ``~`` against the injected ``home``, never the real process HOME."""
+    if value.startswith("~"):
+        return Path(value.replace("~", str(home), 1))
+    return Path(value)
 
 
 def resolve(
@@ -58,11 +61,11 @@ def resolve(
     home_dir = Path.home() if home is None else Path(home)
 
     settings_value = settings_path or env.get("MIXXXLIB_SETTINGS_PATH")
-    settings_dir = _expand(str(settings_value)) if settings_value else default_settings_dir(
+    settings_dir = _expand(str(settings_value), home=home_dir) if settings_value else default_settings_dir(
         platform=plat, home=home_dir, environ=env
     )
     db_value = db or env.get("MIXXXLIB_DB")
-    db_path = _expand(str(db_value)) if db_value else settings_dir / DB_FILENAME
+    db_path = _expand(str(db_value), home=home_dir) if db_value else settings_dir / DB_FILENAME
     backup_value = backup_dir or env.get("MIXXXLIB_BACKUP_DIR")
-    backup_path = _expand(str(backup_value)) if backup_value else default_backup_dir(home=home_dir, environ=env)
+    backup_path = _expand(str(backup_value), home=home_dir) if backup_value else default_backup_dir(home=home_dir, environ=env)
     return ResolvedPaths(settings_dir=settings_dir, db=db_path, config=settings_dir / CONFIG_FILENAME, backup_dir=backup_path)

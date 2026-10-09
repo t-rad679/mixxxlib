@@ -42,9 +42,10 @@ def test_xdg_data_home_moves_backup_dir():
     assert r.backup_dir == Path("/xdg/mixxxlib/backups")
 
 
-def test_tilde_is_expanded(monkeypatch):
-    monkeypatch.setenv("HOME", str(HOME))
-    r = resolve(db="~/db.sqlite", environ={}, platform="linux", home=HOME)
+def test_tilde_is_expanded():
+    # environ["HOME"] deliberately disagrees with the injected home, to prove
+    # expansion follows the injected home/environ, never the real os.environ.
+    r = resolve(db="~/db.sqlite", environ={"HOME": "/not/used"}, platform="linux", home=HOME)
     assert r.db == HOME / "db.sqlite"
 
 
