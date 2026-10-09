@@ -220,3 +220,12 @@ def test_constructor_wraps_add_tags_failure_as_tag_error(tmp_path, monkeypatch):
     with pytest.raises(TagError) as e:
         files.TagFile(path)
     assert e.value.exit_code == 9
+
+
+@pytest.mark.parametrize("bad_path", [None, 123])
+def test_restore_tags_snapshot_with_non_path_like_path_is_tag_error(tmp_path, bad_path):
+    snap = tmp_path / "bad-path.json"
+    snap.write_text(json.dumps({"path": bad_path, "track_id": 1, "tags": {f: None for f in files.TAG_FIELDS}}))
+    with pytest.raises(TagError) as e:
+        files.restore_tags(snap)
+    assert e.value.exit_code == 9

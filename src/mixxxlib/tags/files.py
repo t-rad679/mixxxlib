@@ -35,7 +35,12 @@ def _text(frames: list) -> str | None:
 
 class TagFile:
     def __init__(self, path: os.PathLike[str] | str) -> None:
-        self.path = Path(path)
+        try:
+            self.path = Path(path)
+        except TagError:
+            raise
+        except Exception as exc:  # e.g. TypeError from Path() on a non-path-like value (None, int, ...)
+            raise TagError(f"not a valid path: {path!r}: {exc}", path=repr(path)) from exc
         if not self.path.is_file():
             raise TagError(f"audio file not found: {self.path}", path=str(self.path))
         try:
