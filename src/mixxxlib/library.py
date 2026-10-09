@@ -9,8 +9,9 @@ from contextlib import closing, contextmanager
 from typing import Any
 
 from mixxxlib import __version__, doctor as doctor_mod, paths as paths_mod
-from mixxxlib.db import connection as conn_mod, crates as crates_sql, schema as schema_mod
-from mixxxlib.model import Crate, CrateNode, Finding, MutationResult, SchemaInfo, WarningMessage
+from mixxxlib.db import connection as conn_mod, crates as crates_sql, schema as schema_mod, tracks as tracks_sql
+from mixxxlib.errors import ValidationError
+from mixxxlib.model import Crate, CrateNode, Finding, MutationResult, SchemaInfo, Track, WarningMessage
 from mixxxlib.safety import backup as backup_mod
 from mixxxlib.safety.guard import mixxx_process_running
 from mixxxlib.settings import load_mixxx_cfg
@@ -28,6 +29,7 @@ class Library:
         with closing(conn_mod.open_ro(resolved.db)) as conn, conn_mod.translating_errors():
             self.schema: SchemaInfo = schema_mod.schema_info(conn, ceiling=schema_ceiling)
         self.crates = CratesAPI(self)
+        self.tracks = TracksAPI(self)
 
     @classmethod
     def open(cls, settings_path: str | None = None, db: str | None = None, backup_dir: str | None = None, *,
@@ -183,3 +185,31 @@ class CratesAPI:
         ids = self.subtree_ids(crate, recursive=recursive)
         with self._lib.read() as conn:
             return crates_sql.export_m3u8(conn, ids)
+
+
+class TracksAPI:
+    def __init__(self, lib: Library) -> None:
+        self._lib = lib
+
+    def _has_tuning(self, conn: sqlite3.Connection) -> bool:
+        # Trusting the declared schema version alone is not enough: a fixture (or a database
+        # whose schema row was bumped by hand) can claim a revision whose DDL it was never
+        # migrated to. Cross-check the actual column, same defensive pattern as Library.doctor().
+        return "tuning_frequency" in self._lib.schema.capabilities and schema_mod.has_column(conn, "library", "tuning_frequency_hz")
+
+    def list(self, *, crate: Crate | None = None, search: str | None = None, recursive: bool = False) -> list[Track]:
+        crate_ids = self._lib.crates.subtree_ids(crate, recursive=recursive) if crate is not None else None
+        with self._lib.read() as conn:
+            return tracks_sql.list_tracks(conn, has_tuning=self._has_tuning(conn), crate_ids=crate_ids, search=search)
+
+    def get(self, track_id: int) -> Track:
+        with self._lib.read() as conn:
+            return tracks_sql.get_track(conn, int(track_id), has_tuning=self._has_tuning(conn))
+
+    def get_by_path(self, path: str) -> Track:
+        with self._lib.read() as conn:
+            return tracks_sql.get_track_by_path(conn, path, has_tuning=self._has_tuning(conn))
+
+    def resolve(self, selectors: Iterable[str], *, paths: bool, missing_error=ValidationError) -> list[int]:
+        with self._lib.read() as conn:
+            return tracks_sql.resolve_track_ids(conn, selectors, paths=paths, missing_error=missing_error)
