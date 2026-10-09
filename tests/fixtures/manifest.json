@@ -1,0 +1,110 @@
+{
+  "audio": {
+    "1106": "20-say-nothing.aiff",
+    "551": "01-bloom.aiff",
+    "552": "02-feel.aiff",
+    "553": "03-novacaine.aiff",
+    "554": "04-easy-to-love.aiff",
+    "555": "05-headway.aiff",
+    "556": "06-voyage.aiff",
+    "557": "07-footprints.aiff",
+    "558": "08-wizard-womp-original-mix.flac",
+    "559": "09-wizard-womp-original-mix.mp3",
+    "560": "10-funk-rocket.flac",
+    "561": "11-funk-rocket.mp3",
+    "562": "12-psychedelic-symphony.flac",
+    "563": "13-psychedelic-symphony.mp3",
+    "594": "14-microworlds-chmura-remix.flac",
+    "605": "15-microworlds-chmura-remix.mp3",
+    "606": "16-tomboy-ashez-remix.mp3",
+    "607": "17-childhood-village-remix.mp3",
+    "818": "18-falling-star-original-mi.aiff",
+    "882": "19-brainwavez-alternate-uni.aiff"
+  },
+  "coloured_track": 551,
+  "crate_members": {
+    "locked": [
+      556,
+      557
+    ],
+    "loops": [
+      551,
+      552,
+      553,
+      554,
+      555
+    ]
+  },
+  "crates": {
+    "empty": 4,
+    "locked": 3,
+    "loops": 2,
+    "original": [
+      1
+    ]
+  },
+  "hotcue_ids": {
+    "dup_a": 4254,
+    "dup_b": 4255,
+    "slot0": 4252,
+    "zero_colour": 4253
+  },
+  "hotcue_rate": 88200,
+  "hotcue_track": 551,
+  "key_mismatch_track": 552,
+  "real_position_cue_track": 552,
+  "tracks": [
+    551,
+    552,
+    553,
+    554,
+    555,
+    556,
+    557,
+    558,
+    559,
+    560,
+    561,
+    562,
+    563,
+    594,
+    605,
+    606,
+    607,
+    818,
+    882,
+    1106
+  ],
+  "tracks_by_ext": {
+    "aiff": [
+      551,
+      552,
+      553,
+      554,
+      555,
+      556,
+      557,
+      818,
+      882,
+      1106
+    ],
+    "flac": [
+      558,
+      560,
+      562,
+      594
+    ],
+    "mp3": [
+      559,
+      561,
+      563,
+      605,
+      606,
+      607
+    ]
+  },
+  "unanalyzed_tracks": [
+    882,
+    1106
+  ]
+}

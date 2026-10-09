@@ -1,0 +1,20 @@
+{
+  "crate_members": {
+    "bass": [
+      551,
+      552,
+      553
+    ],
+    "dubstep": [
+      554,
+      555
+    ]
+  },
+  "crates": {
+    "bass": 6,
+    "dubstep": 7,
+    "dupe_a": 8,
+    "dupe_b": 9,
+    "genres": 5
+  }
+}
