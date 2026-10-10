@@ -69,20 +69,25 @@ class TagFile:
     # -- read -----------------------------------------------------------------
 
     def read(self) -> dict[str, str | None]:
-        if self.kind == "vorbis":
+        try:
+            if self.kind == "vorbis":
+                tags = self._audio.tags
+                return {field: (tags[tag][0] if tag in tags and tags[tag] else None) for field, tag in VORBIS_TAGS.items()}
             tags = self._audio.tags
-            return {field: (tags[tag][0] if tag in tags and tags[tag] else None) for field, tag in VORBIS_TAGS.items()}
-        tags = self._audio.tags
-        values: dict[str, str | None] = {field: _text(tags.getall(frame)) for field, frame in ID3_SIMPLE.items()}
-        trck = _text(tags.getall("TRCK"))
-        number, _, total = (trck or "").partition("/")
-        values["tracknumber"] = number or None
-        values["tracktotal"] = total or None
-        values["grouping"] = _text(tags.getall("TIT1")) or _text(tags.getall("GRP1"))
-        comments = tags.getall("COMM")
-        preferred = [c for c in comments if c.desc == ""] or comments
-        values["comment"] = _text(preferred)
-        return values
+            values: dict[str, str | None] = {field: _text(tags.getall(frame)) for field, frame in ID3_SIMPLE.items()}
+            trck = _text(tags.getall("TRCK"))
+            number, _, total = (trck or "").partition("/")
+            values["tracknumber"] = number or None
+            values["tracktotal"] = total or None
+            values["grouping"] = _text(tags.getall("TIT1")) or _text(tags.getall("GRP1"))
+            comments = tags.getall("COMM")
+            preferred = [c for c in comments if c.desc == ""] or comments
+            values["comment"] = _text(preferred)
+            return values
+        except TagError:
+            raise
+        except Exception as exc:  # e.g. a mutagen frame-decoding quirk, or the file changing underneath us
+            raise TagError(f"mutagen could not read tags from {self.path}: {exc}", path=str(self.path)) from exc
 
     # -- write ----------------------------------------------------------------
 
@@ -144,7 +149,12 @@ class TagFile:
                 tags.add(id3.TRCK(encoding=3, text=[number]))
 
     def mtime_ms(self) -> int:
-        return int(self.path.stat().st_mtime * 1000)
+        try:
+            return int(self.path.stat().st_mtime * 1000)
+        except TagError:
+            raise
+        except Exception as exc:  # e.g. the file vanishing between write and this stat
+            raise TagError(f"could not stat {self.path}: {exc}", path=str(self.path)) from exc
 
 
 def read_tags(path: os.PathLike[str] | str) -> dict[str, str | None]:
@@ -207,14 +217,29 @@ class TagWriteAction:
 
     def apply(self) -> dict[str, Any]:
         self.snapshot = snapshot_tags(self.path, self.backup_dir, self.track_id)
-        write_tags(self.path, self.values)
-        back = read_tags(self.path)
-        mismatches = {field: {"expected": value, "read_back": back.get(field)}
-                      for field, value in self.values.items() if back.get(field) != value}
-        if mismatches:
-            restore_tags(self.snapshot)
-            raise TagError(f"tags did not read back as written in {self.path}", path=str(self.path), mismatches=mismatches)
-        return {"mtime_ms": TagFile(self.path).mtime_ms(), "snapshot": str(self.snapshot)}
+        try:
+            write_tags(self.path, self.values)
+            back = read_tags(self.path)
+            mismatches = {field: {"expected": value, "read_back": back.get(field)}
+                          for field, value in self.values.items() if back.get(field) != value}
+            if mismatches:
+                raise TagError(f"tags did not read back as written in {self.path}", path=str(self.path), mismatches=mismatches)
+            return {"mtime_ms": TagFile(self.path).mtime_ms(), "snapshot": str(self.snapshot)}
+        except TagError as exc:
+            # Anything from here on (a failed write, a failed verification read, a mismatch, or a
+            # failed mtime_ms stat) means the file may already have been rewritten on disk with
+            # self.values, while the database side of this mutation never ran. run_mutation's
+            # `applied` bookkeeping only tracks actions whose apply() returned successfully, so it
+            # cannot roll this one back itself -- apply() must self-heal before propagating, or the
+            # file and database are left silently desynced (the Critical finding this guards).
+            try:
+                restore_tags(self.snapshot)
+                exc.details["file_rollback"] = [self.describe()]
+            except TagError as restore_exc:
+                exc.details["file_rollback"] = []
+                exc.details["file_rollback_failed"] = [self.describe()]
+                exc.details["file_rollback_error"] = str(restore_exc)
+            raise
 
     def rollback(self) -> None:
         if self.snapshot is not None:

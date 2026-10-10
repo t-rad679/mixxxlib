@@ -126,6 +126,43 @@ def test_database_failure_after_file_write_restores_the_file(sandbox, manifest, 
     assert sandbox.scalar("SELECT artist FROM library WHERE id = ?", track_id) == before["artist"]
 
 
+def test_non_tag_error_during_verification_read_still_rolls_back_the_file(sandbox, manifest, monkeypatch):
+    # Regression for the final-review Critical: TagFile.read()/mtime_ms() used to have no
+    # exception wrapping, so a non-TagError raised during TagWriteAction.apply()'s post-write
+    # verification read (or its final mtime_ms() stat) escaped run_mutation's `except TagError`
+    # entirely and bypassed rollback -- leaving the file rewritten with the database untouched.
+    # Inject a bare ValueError from inside the real TagFile.read() code path (not by replacing
+    # read_tags() itself, which would just bypass the fix under test): mutagen.id3.ID3.getall is
+    # the first thing read()'s id3 branch calls each time it runs, and it's called exactly 3
+    # times for one `track set <id> artist=X --yes` on an id3 file: (1) snapshot_tags' read,
+    # (2) write()'s internal `current = self.read()`, (3) the post-write verification read. Fail
+    # only the 3rd.
+    import mutagen.id3 as id3_mod
+
+    track_id = manifest["tracks_by_ext"]["mp3"][2]
+    path = path_of(sandbox, manifest, track_id)
+    before = read_tags(path)
+
+    orig_getall = id3_mod.ID3.getall
+    counter = {"n": 0}
+
+    def flaky_getall(self, key, *a, **kw):
+        if key == "TPE1":
+            counter["n"] += 1
+            if counter["n"] == 3:
+                raise ValueError("simulated mutagen/OSError on post-write verification read")
+        return orig_getall(self, key, *a, **kw)
+
+    monkeypatch.setattr(id3_mod.ID3, "getall", flaky_getall)
+    r = sandbox.run("track", "set", str(track_id), "artist=LeakTest", "--yes", "--json")
+    assert r.code == 9, r.stderr  # tag_error, not an uncaught/internal exception
+    err = r.error["error"]
+    assert err["code"] == "tag_error"
+    assert err["details"]["file_rollback"]
+    assert read_tags(path) == before
+    assert sandbox.scalar("SELECT artist FROM library WHERE id = ?", track_id) == before["artist"]
+
+
 def test_track_set_by_path(sandbox, manifest):
     track_id = manifest["tracks"][1]
     path = path_of(sandbox, manifest, track_id)

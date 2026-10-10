@@ -200,7 +200,11 @@ def run_mutation(
             applied.append(action)
     except TagError as exc:
         restored, failed = _rollback_all(applied)
-        exc.details["file_rollback"] = restored
+        # The action that just raised may already have self-healed (see TagWriteAction.apply())
+        # and recorded that in its own details before we ever get here -- it is never itself in
+        # `applied` (that only tracks actions whose apply() returned), so merge rather than overwrite.
+        exc.details["file_rollback"] = exc.details.get("file_rollback", []) + restored
+        failed = exc.details.get("file_rollback_failed", []) + failed
         if failed:
             exc.details["file_rollback_failed"] = failed
         if backup_path is not None:

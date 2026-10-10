@@ -105,6 +105,31 @@ def test_tag_write_action_restores_on_verification_mismatch(tmp_path, monkeypatc
     assert files.read_tags(path) == original
 
 
+def test_read_wraps_a_non_tag_error_as_tag_error(tmp_path, monkeypatch):
+    # Regression for the final-review Critical: TagFile.read() had no exception wrapping at all
+    # (unlike __init__/write()), so any non-TagError raised while decoding frames escaped
+    # run_mutation's `except TagError` and bypassed rollback entirely.
+    path = copy(tmp_path, "mp3")
+
+    def boom(frames):
+        raise ValueError("simulated mutagen decoding quirk")
+
+    monkeypatch.setattr(files, "_text", boom)
+    with pytest.raises(TagError):
+        files.TagFile(path).read()
+
+
+def test_mtime_ms_wraps_a_non_tag_error_as_tag_error(tmp_path):
+    # Same bug class as above: mtime_ms() called self.path.stat() unwrapped. A file removed in
+    # the narrow window between the verification read succeeding and this stat (e.g. by something
+    # else touching the file) must come back as a TagError, not a bare FileNotFoundError.
+    path = copy(tmp_path, "mp3")
+    tf = files.TagFile(path)
+    path.unlink()
+    with pytest.raises(TagError):
+        tf.mtime_ms()
+
+
 def test_unsupported_and_missing_files_are_tag_errors(tmp_path):
     text = tmp_path / "notes.txt"
     text.write_text("hi")
