@@ -114,31 +114,45 @@ class CratesAPI:
     def __init__(self, lib: Library) -> None:
         self._lib = lib
 
+    def _has_nested(self, conn: sqlite3.Connection) -> bool:
+        # Trusting the declared schema version alone is not enough: a database whose settings row
+        # claims revision >= 41 but whose DDL was never migrated to it (or was hand-edited) would
+        # otherwise make a nested-aware query reference crates.parent_id, a column that may not
+        # exist. Same defensive pattern as Library.doctor() and TracksAPI._has_tuning() -- and the
+        # same silent-degrade-to-flat precedent doctor() already sets for this exact mismatch.
+        return self._lib.nested and schema_mod.has_column(conn, "crates", "parent_id")
+
     def list(self, *, parent: Crate | None = None, roots_only: bool = False) -> list[Crate]:
         if parent is not None:
             self._lib.require_nested()
         with self._lib.read() as conn:
-            return crates_sql.list_crates(conn, nested=self._lib.nested, parent_id=parent.id if parent else None,
+            return crates_sql.list_crates(conn, nested=self._has_nested(conn), parent_id=parent.id if parent else None,
                                           roots_only=roots_only)
 
     def get(self, selector: str | int, *, by_id: bool = False, parent: Crate | None = None) -> Crate:
         if parent is not None:
             self._lib.require_nested()
         with self._lib.read() as conn:
+            nested = self._has_nested(conn)
             if by_id:
-                return crates_sql.get_crate_by_id(conn, int(selector), nested=self._lib.nested)
-            return crates_sql.find_crate_by_name(conn, str(selector), nested=self._lib.nested,
+                return crates_sql.get_crate_by_id(conn, int(selector), nested=nested)
+            return crates_sql.find_crate_by_name(conn, str(selector), nested=nested,
                                                  parent_id=parent.id if parent else None, parent_given=parent is not None)
 
     def tree(self) -> list[CrateNode]:
         with self._lib.read() as conn:
-            return crates_sql.tree(conn, nested=self._lib.nested)
+            return crates_sql.tree(conn, nested=self._has_nested(conn))
 
     def subtree_ids(self, crate: Crate, *, recursive: bool) -> list[int]:
         if not recursive:
             return [crate.id]
         self._lib.require_nested()
         with self._lib.read() as conn:
+            if not self._has_nested(conn):
+                # Capability claimed by the schema row, but crates.parent_id doesn't actually
+                # exist: degrade the same way list()/get()/tree() do rather than querying a
+                # missing column -- a crate can have no descendants without that column.
+                return [crate.id]
             return [crate.id, *crates_sql.descendant_ids(conn, crate.id)]
 
     def members(self, crate: Crate, *, recursive: bool = False) -> list[int]:

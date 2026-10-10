@@ -1,5 +1,6 @@
 import io
 import json
+import sqlite3
 
 import pytest
 
@@ -172,3 +173,37 @@ def test_id_and_parent_together_are_rejected(sandbox_42, manifest_42):
     # it passes parent=None to resolve_crate for the *selector* itself.
     r = sandbox_42.run("crate", "move", str(bass_id), "--id", "--root", "--json")
     assert r.code == 0
+
+
+def test_overclaimed_nested_capability_degrades_crate_reads_instead_of_raising(sandbox):
+    """Final-review item 5: Library.doctor() and TracksAPI._has_tuning() both cross-check
+    has_column() before trusting a capability implied by the declared schema revision; CratesAPI
+    did not. A settings row claiming nested_crates (revision 41) while crates.parent_id genuinely
+    doesn't exist (a hand-edited or corrupted schema row) used to make crate list/show/tree raise
+    a raw "no such column: c.parent_id" sqlite error (exit 7) instead of a clean verdict. They
+    must now degrade to flat behaviour, the same way doctor() already does for this exact
+    mismatch. Mutations are unaffected: run_mutation's schema gate already refuses revision 41
+    above this fixture's ceiling (40) before any SQL runs -- confirmed below by checking the db
+    is byte-identical after the refused create."""
+    with sqlite3.connect(sandbox.db, autocommit=True) as w:
+        cols = [r[1] for r in w.execute("PRAGMA table_info(crates)")]
+        assert "parent_id" not in cols
+        w.execute("UPDATE settings SET value = '41' WHERE name = 'mixxx.schema.version'")
+    try:
+        r = sandbox.run("crate", "list", "--json")
+        assert r.code == 0, r.stderr
+        assert all(c["parent_id"] is None for c in r.json["data"])
+
+        r = sandbox.run("crate", "tree", "--json")
+        assert r.code == 0, r.stderr
+
+        r = sandbox.run("crate", "show", "Fixture Loops", "--json")
+        assert r.code == 0 and r.json["data"]["crate"]["parent_id"] is None
+
+        before = sandbox.db.read_bytes()
+        r = sandbox.run("crate", "create", "ShouldFail", "--json")
+        assert r.code == 6 and r.error["error"]["code"] == "schema_unsupported"
+        assert sandbox.db.read_bytes() == before
+    finally:
+        with sqlite3.connect(sandbox.db, autocommit=True) as w:
+            w.execute("UPDATE settings SET value = '39' WHERE name = 'mixxx.schema.version'")
