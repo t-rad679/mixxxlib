@@ -40,7 +40,13 @@ def probe_lock(conn: sqlite3.Connection) -> None:
     a running Mixxx holds an in-memory track cache that can silently overwrite an external edit
     even when no write transaction happens to be open at this exact instant, so a Mixxx that
     merely has the file open passes this probe cleanly. That hazard is covered by the
-    pgrep-based process check in assert_mixxx_closed, which runs first, not by this probe.
+    pgrep-based process check in assert_mixxx_closed, not by this probe.
+
+    On ordering: run_mutation calls this probe FIRST, ahead of both the schema guard and
+    assert_mixxx_closed. That is deliberate -- schema_info() swallows SQLITE_BUSY, so a database
+    locked by a running Mixxx would otherwise be reported as an unsupported schema (exit 6)
+    instead of mixxx_running (exit 5). Running first is about getting the exit code right, not
+    about this probe being the stronger check; it is the weaker one.
     """
     try:
         conn.execute("BEGIN IMMEDIATE")
