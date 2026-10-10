@@ -253,6 +253,15 @@ class BackupsAPI:
         try:
             with closing(conn_mod.open_ro(candidate)) as check:
                 result = conn_mod.integrity_check(check)
+                # Read the version directly first so a missing `settings` table (not a Mixxx
+                # database at all — e.g. a zero-byte file, or any other valid-but-foreign SQLite
+                # file) raises sqlite3.Error and falls through to the "database" exit below.
+                # schema_info() deliberately swallows that same error into verdict="missing" (its
+                # contract for "can't tell the schema version"), which would otherwise misreport
+                # "this isn't a Mixxx database" as "unsupported schema" — those are exit 7 and exit
+                # 6 respectively, and the distinction is real: 6 means it IS a Mixxx database, just
+                # at a revision we don't support.
+                schema_mod.read_schema_version(check)
                 info = schema_mod.schema_info(check, ceiling=self._lib.schema_ceiling)
         except sqlite3.Error as exc:
             raise DatabaseError(f"candidate is not a readable Mixxx database: {exc}", path=str(candidate)) from exc

@@ -132,9 +132,13 @@ def test_backup_restore_refuses_candidate_below_floor(sandbox, manifest, tmp_pat
     assert not any("backup-restore" in name for name in labels)
 
 
-def test_backup_restore_refuses_candidate_with_missing_schema_row(sandbox, tmp_path):
-    """A candidate with no mixxx.schema.version row at all is also refused as schema_unsupported
-    (schema_info()'s "missing" verdict), not as a generic database error."""
+def test_backup_restore_refuses_candidate_with_missing_schema_row(sandbox, manifest, tmp_path):
+    """A candidate that IS a valid Mixxx database (settings table present) but whose
+    mixxx.schema.version row is absent is refused as schema_unsupported (schema_info()'s
+    "missing" verdict) — exit 6, not a generic database error, because this is a real Mixxx
+    database, just one we can't tell the revision of."""
+    original_name = sandbox.scalar("SELECT name FROM crates WHERE id = ?", manifest["crates"]["loops"])
+    original_bytes = sandbox.db.read_bytes()
     good = sandbox.run("backup", "create", "--json").json["data"]["backup"]
     candidate = tmp_path / "no-version-row.sqlite"
     candidate.write_bytes(open(good, "rb").read())
@@ -143,6 +147,62 @@ def test_backup_restore_refuses_candidate_with_missing_schema_row(sandbox, tmp_p
 
     r = sandbox.run("backup", "restore", str(candidate), "--yes", "--json")
     assert r.code == 6 and r.error["error"]["code"] == "schema_unsupported"
+
+    assert sandbox.db.read_bytes() == original_bytes
+    assert sandbox.scalar("SELECT name FROM crates WHERE id = ?", manifest["crates"]["loops"]) == original_name
+    labels = [b["name"] for b in sandbox.run("backup", "list", "--json").json["data"]["backups"]]
+    assert not any("backup-restore" in name for name in labels)
+
+
+def test_backup_restore_refuses_zero_byte_candidate_as_database_error(sandbox, manifest, tmp_path):
+    """A zero-byte file is a valid (empty) SQLite database to the engine, but it has no `settings`
+    table at all — it is not a Mixxx database, so this must be exit 7 ("database"), not exit 6
+    ("schema_unsupported"). Reclassifying "not a Mixxx database" as "unsupported schema" was the
+    round-2 regression: schema_info() swallows the missing-table error into verdict="missing",
+    which looks identical to a genuine Mixxx database with no version row unless the missing-table
+    error is allowed to propagate first."""
+    original_name = sandbox.scalar("SELECT name FROM crates WHERE id = ?", manifest["crates"]["loops"])
+    original_bytes = sandbox.db.read_bytes()
+    candidate = tmp_path / "zero-byte.sqlite"
+    candidate.write_bytes(b"")
+
+    r = sandbox.run("backup", "restore", str(candidate), "--yes", "--json")
+    assert r.code == 7 and r.error["error"]["code"] == "database"
+
+    assert sandbox.db.read_bytes() == original_bytes
+    assert sandbox.scalar("SELECT name FROM crates WHERE id = ?", manifest["crates"]["loops"]) == original_name
+    labels = [b["name"] for b in sandbox.run("backup", "list", "--json").json["data"]["backups"]]
+    assert not any("backup-restore" in name for name in labels)
+
+
+def test_backup_restore_refuses_candidate_with_no_settings_table_as_database_error(sandbox, manifest, tmp_path):
+    """A structurally valid SQLite file that simply never had a `settings` table (DROP TABLE
+    settings) is not a Mixxx database either — exit 7, same reasoning as the zero-byte case."""
+    original_name = sandbox.scalar("SELECT name FROM crates WHERE id = ?", manifest["crates"]["loops"])
+    original_bytes = sandbox.db.read_bytes()
+    good = sandbox.run("backup", "create", "--json").json["data"]["backup"]
+    candidate = tmp_path / "no-settings-table.sqlite"
+    candidate.write_bytes(open(good, "rb").read())
+    with closing(sqlite3.connect(candidate, autocommit=True)) as conn:
+        conn.execute("DROP TABLE settings")
+
+    r = sandbox.run("backup", "restore", str(candidate), "--yes", "--json")
+    assert r.code == 7 and r.error["error"]["code"] == "database"
+
+    assert sandbox.db.read_bytes() == original_bytes
+    assert sandbox.scalar("SELECT name FROM crates WHERE id = ?", manifest["crates"]["loops"]) == original_name
+    labels = [b["name"] for b in sandbox.run("backup", "list", "--json").json["data"]["backups"]]
+    assert not any("backup-restore" in name for name in labels)
+
+
+def test_backup_restore_refuses_directory_as_file(sandbox, tmp_path):
+    """A directory passed as FILE is not a file at all — exit 3 (not_found), same as a plain
+    nonexistent path, resolved before the --yes confirmation gate."""
+    directory = tmp_path / "a-directory"
+    directory.mkdir()
+
+    r = sandbox.run("backup", "restore", str(directory), "--yes", "--json")
+    assert r.code == 3 and r.error["error"]["code"] == "not_found"
 
 
 def test_backup_restore_allows_unverified_candidate(sandbox, manifest, tmp_path):
