@@ -174,10 +174,15 @@ def check_keys(ctx: DoctorContext) -> list[Finding]:
     for track_id, text, key_id in ctx.conn.execute("SELECT id, key, key_id FROM library ORDER BY id"):
         try:
             parsed = MusicalKey.parse(text)
-        except ValidationError:
+            key_id_int = int(key_id or 0)
+        except (ValidationError, ValueError, TypeError):
+            # ValidationError from MusicalKey.parse (bad key text); ValueError/TypeError from
+            # int() -- SQLite's dynamic typing allows non-numeric text in a nominally-INTEGER
+            # key_id column, which must be reported as a `keys` finding, not crash the whole
+            # doctor report (final-review item 3).
             bad.append(track_id)
             continue
-        if parsed.id != int(key_id or 0):
+        if parsed.id != key_id_int:
             bad.append(track_id)
     if not bad:
         return []
@@ -209,9 +214,22 @@ CHECKS: list[Callable[[DoctorContext], list[Finding]]] = [
 
 
 def run_doctor(ctx: DoctorContext) -> list[Finding]:
+    """Run every check, isolating failures so one broken check can't discard the rest of the
+    report (final-review item 3). `doctor` is the command reached for when something is already
+    wrong, and it is pure-read (spec §8.5) -- there is nothing to roll back here, so catching
+    broadly and turning a check's own failure into an error-severity Finding is safe and, unlike
+    `run_mutation`, costs nothing. A database bad enough to break every check still degrades to a
+    report that is all `error` findings rather than no report at all; this also lets `check_schema`
+    and `check_integrity`'s own correct diagnoses ("this isn't a Mixxx database") survive even
+    when a later check raises on the same broken file."""
     findings: list[Finding] = []
     for check in CHECKS:
-        findings.extend(check(ctx))
+        name = check.__name__.removeprefix("check_")
+        try:
+            findings.extend(check(ctx))
+        except Exception as exc:
+            findings.append(Finding(name, "error", f"check failed: {type(exc).__name__}: {exc}",
+                                    {"exception": type(exc).__name__}))
     return findings
 
 
