@@ -122,6 +122,8 @@ def test_beatgrid_decode_warning_surfaces_on_show(sandbox, manifest):
     assert r.json["data"]["track"]["analysis"]["beatgrid"]["decoded"] is False
     warnings = r.json["warnings"]
     assert [w["code"] for w in warnings] == ["beats_undecodable"]
+    detail = warnings[0]["details"]
+    assert detail == {"count": 1, "track_ids": [track_id], "versions": ["BeatGrid-2.0"]}
 
 
 def test_beatgrid_decode_warnings_aggregate_on_list(sandbox, manifest):
@@ -136,3 +138,40 @@ def test_beatgrid_decode_warnings_aggregate_on_list(sandbox, manifest):
     detail = warnings[0]["details"]
     assert detail["count"] == len(corrupted)
     assert sorted(detail["track_ids"]) == sorted(corrupted)
+    assert detail["versions"] == ["BeatGrid-2.0"]
+
+
+def test_beatgrid_decode_warning_detail_schema_agrees_between_show_and_list(sandbox, manifest):
+    """Final-review item 4: beats_undecodable used to carry a different, incompatible `details`
+    shape depending on whether it came through the single-track path (track show / cue * / crate
+    show, via row_to_track) or the multi-track path (track list / crate show --tracks, via
+    _aggregate_warnings) -- and the aggregated path dropped `version` entirely. Both paths must
+    now agree on the same keys (count, track_ids, versions), with `versions` a single-element
+    list for one track and the full distinct set for an aggregation that spans several."""
+    track_id = manifest["tracks"][0]
+    _write(sandbox, "UPDATE library SET beats = ? WHERE id = ?", b"\xff\xff\xff\xff\xff", track_id)
+
+    show = sandbox.run("track", "show", str(track_id), "--json")
+    show_detail = show.json["warnings"][0]["details"]
+    list_ = sandbox.run("track", "list", "--json")
+    list_detail = next(w for w in list_.json["warnings"] if w["code"] == "beats_undecodable")["details"]
+
+    assert set(show_detail) == set(list_detail) == {"count", "track_ids", "versions"}
+    assert show_detail["track_ids"] == [track_id]
+    assert track_id in list_detail["track_ids"]
+    assert show_detail["versions"] == list_detail["versions"] == ["BeatGrid-2.0"]
+
+
+def test_unknown_blob_version_aggregates_the_distinct_versions_involved(sandbox, manifest):
+    """The "plural where an aggregation spans differing versions" half of item 4: two tracks
+    failing the same warning code for two different beats_version values must report both,
+    not just one (and not drop version information the way the pre-fix aggregate path did)."""
+    a, b = manifest["tracks"][:2]
+    _write(sandbox, "UPDATE library SET beats_version = ? WHERE id = ?", "BeatGrid-9.9", a)
+    _write(sandbox, "UPDATE library SET beats_version = ? WHERE id = ?", "BeatGrid-8.8", b)
+
+    r = sandbox.run("track", "list", "--json")
+    assert r.code == 0
+    warning = next(w for w in r.json["warnings"] if w["code"] == "unknown_blob_version")
+    assert warning["details"]["versions"] == sorted(["BeatGrid-9.9", "BeatGrid-8.8"])
+    assert sorted(warning["details"]["track_ids"]) == sorted([a, b])

@@ -55,7 +55,14 @@ def _bool(value) -> bool | None:
 
 
 def row_to_track(row: sqlite3.Row) -> tuple[Track, list[WarningMessage]]:
-    grid, warnings = beats.decode(row["beats"], row["beats_version"], row["samplerate"])
+    grid, raw_warnings = beats.decode(row["beats"], row["beats_version"], row["samplerate"])
+    # Unify the per-row decode-warning detail shape with _aggregate_warnings' below (final-review
+    # item 4: beats_undecodable/unknown_blob_version used to carry {"version": ...} here but
+    # {"count": ..., "track_ids": ...} (with version dropped entirely) from list_tracks/crate show
+    # --tracks -- one warning code must have one detail schema regardless of which command path
+    # produced it, and neither path may drop information the other carries.
+    warnings = [WarningMessage(w.code, w.message, {"count": 1, "track_ids": [row["id"]], "versions": [w.details["version"]]})
+                for w in raw_warnings]
     track = Track(
         id=row["id"],
         location=Location(id=row["tl_id"], path=row["tl_location"], filename=row["tl_filename"],
@@ -95,12 +102,14 @@ def _aggregate_warnings(per_track: list[tuple[int, list[WarningMessage]]]) -> li
     exactly that).
     """
     by_code: dict[str, list[int]] = {}
+    versions_by_code: dict[str, set[str]] = {}
     for track_id, warnings in per_track:
         for warning in warnings:
             by_code.setdefault(warning.code, []).append(track_id)
+            versions_by_code.setdefault(warning.code, set()).update(warning.details.get("versions", []))
     return [
         WarningMessage(code, f"{len(ids)} track(s) raised a {code!r} warning while decoding the beatgrid",
-                       {"count": len(ids), "track_ids": sorted(ids)[:SAMPLE]})
+                       {"count": len(ids), "track_ids": sorted(ids)[:SAMPLE], "versions": sorted(versions_by_code[code])})
         for code, ids in by_code.items()
     ]
 
