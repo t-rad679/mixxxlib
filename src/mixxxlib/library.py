@@ -12,7 +12,7 @@ from typing import Any
 
 from mixxxlib import __version__, doctor as doctor_mod, paths as paths_mod
 from mixxxlib.db import connection as conn_mod, crates as crates_sql, schema as schema_mod, tracks as tracks_sql
-from mixxxlib.errors import DatabaseError, NotFoundError, ValidationError
+from mixxxlib.errors import DatabaseError, NotFoundError, SchemaUnsupportedError, ValidationError
 from mixxxlib.model import BackupEntry, Crate, CrateNode, Finding, MutationResult, SchemaInfo, Track, WarningMessage
 from mixxxlib.safety import backup as backup_mod
 from mixxxlib.safety.guard import assert_mixxx_closed, mixxx_process_running
@@ -228,7 +228,10 @@ class BackupsAPI:
         return backup_mod.list_backups(self._lib.paths.backup_dir)
 
     def create(self, label: str | None = None) -> Path:
-        with closing(conn_mod.open_rw(self._lib.paths.db)) as conn, conn_mod.translating_errors():
+        # Read-only: VACUUM INTO only reads the source connection, and a backup must never be able
+        # to damage the database it is backing up. A write-capable handle here would be a gratuitous
+        # risk for an operation that has no business writing to the live file at all.
+        with closing(conn_mod.open_ro(self._lib.paths.db)) as conn, conn_mod.translating_errors():
             return backup_mod.create_backup(conn, self._lib.paths.backup_dir, label or "backup create")
 
     def prune(self) -> list[Path]:
@@ -238,24 +241,26 @@ class BackupsAPI:
         """Full mutation guard, back up the current database, verify the candidate, copy it into place.
 
         Order matters: the candidate is opened read-only and put through PRAGMA integrity_check and a
-        schema-version read *before* anything about the live database is touched. Only once that has
-        passed do we take a safety backup of the live database and then swap the candidate into place
-        via a same-directory staging file + atomic os.replace, so a crash mid-copy can never leave a
-        half-written mixxxdb.sqlite.
+        full schema-revision check (against this library's configured ceiling, the same check every
+        mutating command and `doctor` use) *before* anything about the live database is touched. Only
+        once that has passed do we take a safety backup of the live database and then swap the
+        candidate into place via a same-directory staging file + atomic os.replace, so a crash
+        mid-copy can never leave a half-written mixxxdb.sqlite.
         """
         candidate = Path(candidate)
         if not candidate.is_file():
             raise NotFoundError(f"backup file not found at {candidate}", path=str(candidate))
         try:
-            with closing(sqlite3.connect(f"{candidate.resolve().as_uri()}?mode=ro", uri=True)) as check:
+            with closing(conn_mod.open_ro(candidate)) as check:
                 result = conn_mod.integrity_check(check)
-                version = schema_mod.read_schema_version(check)
+                info = schema_mod.schema_info(check, ceiling=self._lib.schema_ceiling)
         except sqlite3.Error as exc:
             raise DatabaseError(f"candidate is not a readable Mixxx database: {exc}", path=str(candidate)) from exc
         if result != "ok":
             raise DatabaseError(f"candidate failed integrity_check: {result}", path=str(candidate), integrity=result)
-        if version is None:
-            raise DatabaseError("candidate has no mixxx.schema.version row", path=str(candidate))
+        if info.verdict in ("missing", "unsupported"):
+            raise SchemaUnsupportedError(f"restore candidate: {info.message}", path=str(candidate),
+                                         version=info.version, ceiling=info.ceiling, verdict=info.verdict)
         db = self._lib.paths.db
         with closing(conn_mod.open_rw(db)) as conn, conn_mod.translating_errors():
             assert_mixxx_closed(conn, process_check=self._lib._process_check)
