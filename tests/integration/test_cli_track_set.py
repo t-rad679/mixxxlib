@@ -116,7 +116,8 @@ def test_database_failure_after_file_write_restores_the_file(sandbox, manifest, 
     track_id = manifest["tracks_by_ext"]["mp3"][2]
     path = path_of(sandbox, manifest, track_id)
     before = read_tags(path)
-    monkeypatch.setattr(tracks_sql, "update_sql", lambda columns: "UPDATE no_such_table SET x = ? WHERE id = ?")
+    monkeypatch.setattr(tracks_sql, "update_sql",
+                        lambda columns: "UPDATE no_such_table SET " + ", ".join(f"{c} = ?" for c in columns) + " WHERE id = ?")
     r = sandbox.run("track", "set", str(track_id), "artist=Doomed", "--yes", "--json")
     assert r.code == 7
     err = r.error["error"]
@@ -130,6 +131,62 @@ def test_track_set_by_path(sandbox, manifest):
     path = path_of(sandbox, manifest, track_id)
     r = sandbox.run("track", "set", str(path), "--paths", "rating=5", "--json")
     assert r.code == 0 and r.json["data"]["track"]["id"] == track_id
+
+
+def test_file_only_rejects_a_database_only_field(sandbox, manifest):
+    """A db-only field under --file-only would land in no store at all; it must be rejected outright
+    rather than silently dropped while reporting success."""
+    track_id = manifest["tracks_by_ext"]["flac"][3]
+    before_rating = sandbox.scalar("SELECT rating FROM library WHERE id = ?", track_id)
+    path = path_of(sandbox, manifest, track_id)
+    before_tags = read_tags(path)
+    r = sandbox.run("track", "set", str(track_id), "rating=5", "--file-only", "--json")
+    assert r.code == 4, r.stderr
+    assert r.stdout == ""  # no "changed" (or anything else) was ever reported
+    assert sandbox.scalar("SELECT rating FROM library WHERE id = ?", track_id) == before_rating
+    assert read_tags(path) == before_tags
+
+
+def test_file_only_rejects_clearing_a_database_only_field(sandbox, manifest):
+    track_id = manifest["tracks_by_ext"]["mp3"][4]
+    before_rating = sandbox.scalar("SELECT rating FROM library WHERE id = ?", track_id)
+    path = path_of(sandbox, manifest, track_id)
+    before_tags = read_tags(path)
+    r = sandbox.run("track", "set", str(track_id), "--clear", "rating", "--file-only", "--json")
+    assert r.code == 4, r.stderr
+    assert r.stdout == ""
+    assert sandbox.scalar("SELECT rating FROM library WHERE id = ?", track_id) == before_rating
+    assert read_tags(path) == before_tags
+
+
+def test_file_only_rejects_a_mixed_request_with_one_database_only_field(sandbox, manifest):
+    """Even though the file-backed field in the same request could have been written, the whole
+    request is rejected: no partial application, and no fields silently dropped."""
+    track_id = manifest["tracks_by_ext"]["aiff"][6]
+    before_artist = sandbox.scalar("SELECT artist FROM library WHERE id = ?", track_id)
+    path = path_of(sandbox, manifest, track_id)
+    before_tags = read_tags(path)
+    r = sandbox.run("track", "set", str(track_id), "artist=Mixed", "rating=5", "--file-only", "--json")
+    assert r.code == 4, r.stderr
+    assert r.stdout == ""
+    assert sandbox.scalar("SELECT artist FROM library WHERE id = ?", track_id) == before_artist
+    assert read_tags(path) == before_tags
+
+
+@pytest.mark.parametrize("ext", ["aiff", "mp3", "flac"])
+def test_empty_value_is_rejected_the_same_way_on_every_format(sandbox, manifest, ext):
+    """An empty `FIELD=` used to silently succeed on flac (an empty Vorbis comment survives) while
+    raising TagError on aiff/mp3 (mutagen drops an empty ID3 frame on save). It must now behave
+    identically on all three: a validation error, before any store is touched."""
+    track_id = manifest["tracks_by_ext"][ext][2]
+    before = sandbox.scalar("SELECT comment FROM library WHERE id = ?", track_id)
+    path = path_of(sandbox, manifest, track_id)
+    before_tags = read_tags(path)
+    r = sandbox.run("track", "set", str(track_id), "comment=", "--json")
+    assert r.code == 4, r.stderr
+    assert "comment" in r.error["error"]["message"]
+    assert sandbox.scalar("SELECT comment FROM library WHERE id = ?", track_id) == before
+    assert read_tags(path) == before_tags
 
 
 def test_unwritable_file_fails_as_tag_error_and_leaves_the_database_unchanged(sandbox, manifest):

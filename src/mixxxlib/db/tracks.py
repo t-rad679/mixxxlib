@@ -202,6 +202,12 @@ def coerce_field(name: str, raw: str) -> Any:
         raise ValidationError(f"bpm_lock must be true/false, got {raw!r}", field=name, value=raw)
     if name == "key":
         return MusicalKey.parse(raw)
+    if name in FILE_BACKED_FIELDS and raw == "":
+        # mutagen drops an empty-text ID3 frame on save() (mp3/aiff) but keeps an empty Vorbis
+        # comment (flac) — the same `FIELD=` would silently behave differently by format. Reject
+        # it uniformly instead of letting it through: `--clear FIELD` already means "remove this".
+        raise ValidationError(f"{name} cannot be set to an empty value; use --clear {name} to remove it instead",
+                              field=name)
     return str(raw)
 
 
@@ -228,17 +234,39 @@ def update_sql(columns: list[str]) -> str:
     return f"UPDATE library SET {assignments} WHERE id = ?"
 
 
-def plan_set(conn: sqlite3.Connection, track: Track, changes: dict[str, Any], clears: set[str], *,
-             write_file: bool, write_db: bool, backup_dir: Path) -> MutationPlan:
-    """Build the §7.4 plan: file action (if any file-backed field is in scope) then one UPDATE."""
-    overlap = set(changes) & clears
+def validate_set(changed_fields: Iterable[str], clears: Iterable[str], *, write_db: bool) -> None:
+    """Pure, track-independent checks on a `track set` request's shape — shared by the CLI (called
+    ahead of the --yes gate, with the raw FIELD names) and `plan_set` (called with the coerced
+    `changes` dict's keys), so the two surfaces can never diverge on what counts as a valid request:
+    unknown or overlapping fields, nothing to set, and fields that would land in no store at all
+    under the given --mixxx-only/--file-only scope. Raises ValidationError; never returns a value.
+    """
+    changed_fields = set(changed_fields)
+    clears = set(clears)
+    overlap = changed_fields & clears
     if overlap:
         raise ValidationError(f"fields both set and cleared: {sorted(overlap)}", fields=sorted(overlap))
     for name in clears:
         if name not in WRITABLE_FIELDS:
             raise ValidationError(f"unknown field {name!r}", field=name, fields=sorted(WRITABLE_FIELDS))
-    if not changes and not clears:
+    if not changed_fields and not clears:
         raise ValidationError("nothing to set: pass FIELD=VALUE or --clear FIELD")
+    touched = changed_fields | clears
+    db_only = touched - FILE_BACKED_FIELDS
+    if not write_db and db_only:
+        # These fields have no audio-file tag, so with --file-only (write_db=False) nothing would
+        # write them at all — not even partially. Reject the whole request rather than silently
+        # drop part of it (and rather than warn-and-continue, which previously claimed `changed`
+        # for a field that was never actually written anywhere).
+        raise ValidationError(
+            f"{sorted(db_only)} have no audio-file tag; --file-only cannot write them to any store",
+            fields=sorted(db_only))
+
+
+def plan_set(conn: sqlite3.Connection, track: Track, changes: dict[str, Any], clears: set[str], *,
+             write_file: bool, write_db: bool, backup_dir: Path) -> MutationPlan:
+    """Build the §7.4 plan: file action (if any file-backed field is in scope) then one UPDATE."""
+    validate_set(changes, clears, write_db=write_db)
 
     new_values: dict[str, Any] = {**changes, **{name: None for name in clears}}
     if "key" in clears:
@@ -261,7 +289,10 @@ def plan_set(conn: sqlite3.Connection, track: Track, changes: dict[str, Any], cl
                                        "these fields are re-imported from the audio file; the file's value wins the next time Mixxx re-reads it",
                                        {"fields": sorted(file_fields)}))
     if write_file and db_only_fields:
-        warnings.append(WarningMessage("no_file_tag", "these fields have no audio-file counterpart; only the database changed",
+        # write_file and db_only_fields here implies write_db is True: validate_set already rejects
+        # db-only fields outright when write_db is False, so the database is guaranteed to be the
+        # one store that did get written for them.
+        warnings.append(WarningMessage("no_file_tag", "these fields have no audio-file counterpart, so they were written to the database only",
                                        {"fields": sorted(db_only_fields)}))
 
     old_values = {name: getattr(track.metadata, name) for name in touched}
@@ -288,14 +319,10 @@ def plan_set(conn: sqlite3.Connection, track: Track, changes: dict[str, Any], cl
             else:
                 columns.append(WRITABLE_FIELDS[name])
                 params.append(value)
-        sql = update_sql(columns)
         if file_written:
-            # Spliced onto whatever `update_sql` returned, rather than folded into `columns`, so the
-            # placeholder count this produces always matches `params`'s length even if `update_sql`
-            # is swapped out (e.g. by a test) for something that ignores its `columns` argument.
-            sql = sql[: -len(" WHERE id = ?")] + ", source_synchronized_ms = ? WHERE id = ?"
+            columns.append("source_synchronized_ms")
             params.append(Deferred("mtime_ms"))
-        statements.append(Statement(sql, (*params, track.id)))
+        statements.append(Statement(update_sql(columns), (*params, track.id)))
 
     def after_commit(c: sqlite3.Connection) -> dict[str, Any]:
         has_tuning = any(row[1] == "tuning_frequency_hz" for row in c.execute("PRAGMA table_info(library)"))

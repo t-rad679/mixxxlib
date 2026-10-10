@@ -67,16 +67,11 @@ def set_(ctx: typer.Context, track: Annotated[str, typer.Argument(metavar="TRACK
         obj, decode_warnings = resolve_track(lib, track, paths=paths)
         # Validate before the confirmation gate: bad input is exit 4, even without --yes — the
         # destructive-write confirmation must not block on arguments that were never going to work.
+        # `validate_set` is the same function `plan_set` calls, so the CLI and the library can never
+        # diverge on what counts as a valid request.
         for name, raw in fields.items():
             tracks_sql.coerce_field(name, raw)
-        for name in clears:
-            if name not in tracks_sql.WRITABLE_FIELDS:
-                raise ValidationError(f"unknown field {name!r}", field=name, fields=sorted(tracks_sql.WRITABLE_FIELDS))
-        overlap = set(fields) & set(clears)
-        if overlap:
-            raise ValidationError(f"fields both set and cleared: {sorted(overlap)}", fields=sorted(overlap))
-        if not fields and not clears:
-            raise ValidationError("nothing to set: pass FIELD=VALUE or --clear FIELD")
+        tracks_sql.validate_set(fields, clears, write_db=not file_only)
         touches_file = not mixxx_only and bool((set(fields) | set(clears)) & FILE_BACKED_FIELDS)
         if touches_file and not dry_run:
             require_yes(yes, "track set (writes the audio file)")
