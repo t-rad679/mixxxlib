@@ -13,13 +13,24 @@ CUE_SELECT = "SELECT id, track_id, type, position, length, hotcue, label, color 
 SLOT_REQUIRED = frozenset({"hotcue"})
 SLOT_OPTIONAL = frozenset({"loop"})
 
+# Mixxx writes -1 as the "not set" sentinel for a cue position (same convention, same constant
+# value, as doctor.py's UNSET_POSITION — duplicated here rather than imported to avoid a
+# db -> doctor layering dependency). The raw value is still reported verbatim as
+# `position_samples` (like `slot: -1` already is), but a *derived* value must not state a
+# falsehood: `-1 / rate` is not a real position in seconds, so `position_seconds` is None instead.
+# No comparable sentinel was found for `length`: the fixture has zero negative `length` values
+# (checked: `SELECT count(*) FROM cues WHERE length < 0` returns 0), and neither doctor.py nor the
+# spec documents one, so `length_seconds` is left as a plain `length / rate` division.
+UNSET_POSITION = -1
+
 
 def row_to_cue(row: sqlite3.Row, samples_per_second: float | None) -> Cue:
     position, length = float(row["position"]), float(row["length"])
     rate = samples_per_second or None
+    position_seconds = None if position == UNSET_POSITION else (position / rate if rate else None)
     return Cue(id=row["id"], track_id=row["track_id"], type_id=row["type"], position_samples=position,
                length_samples=length, slot=row["hotcue"], label=row["label"] or "", color=row["color"],
-               position_seconds=position / rate if rate else None, length_seconds=length / rate if rate else None)
+               position_seconds=position_seconds, length_seconds=length / rate if rate else None)
 
 
 def list_cues(conn: sqlite3.Connection, track: Track, *, type_id: int | None = None) -> list[Cue]:

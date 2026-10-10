@@ -87,6 +87,32 @@ def test_cue_set_delete_clear(sandbox, manifest):
     assert r.code == 4
 
 
+def test_cue_unset_position_sentinel_renders_blank(sandbox, manifest):
+    """Mixxx's -1 "unset" position sentinel (fixture: track 551's one outro cue, id 2121) must
+    not be reported as a bogus derived time (`-1 / rate`): `position_samples` keeps the raw -1.0
+    (the same truth-telling the already-sentinel-aware `slot: -1 -> None` gets), but
+    `position_seconds` is None, and the plain-text table renders it blank. `length` has no
+    comparable sentinel in this fixture (verified in test_cue_add_hotcue_and_validation and
+    elsewhere that real lengths are always >= 0), so `length_seconds` is unaffected."""
+    track_id = manifest["hotcue_track"]
+    r = sandbox.run("cue", "list", str(track_id), "--type", "outro", "--json")
+    assert r.code == 0
+    cues = r.json["data"]
+    assert len(cues) == 1
+    outro = cues[0]
+    assert outro["position_samples"] == -1.0
+    assert outro["position_seconds"] is None
+    assert outro["length_samples"] == 20933638.0 and outro["length_seconds"] is not None
+
+    r = sandbox.run("cue", "list", str(track_id), "--type", "outro")
+    assert r.code == 0
+    lines = r.stdout.splitlines()
+    assert lines[0].split()[:2] == ["id", "type"]
+    # slot (-1 -> None), position (-1 -> None) and label ("") are all blank for this cue; only
+    # id, type, length and color survive a naive whitespace split of the one data row.
+    assert lines[1].split() == [str(outro["id"]), "outro", "237.343", "#FF8000"]
+
+
 def test_cue_dry_run(sandbox, manifest):
     track_id = manifest["tracks"][0]
     before = sandbox.scalar("SELECT count(*) FROM cues WHERE track_id = ?", track_id)
