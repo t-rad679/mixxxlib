@@ -4,6 +4,10 @@ set -eu
 cd "$(dirname "$0")/.."
 URL="${MIXXX_SCHEMA_URL:-https://raw.githubusercontent.com/mixxxdj/mixxx/main/res/schema.xml}"
 CEILING="$(sed -n 's/^SCHEMA_CEILING = \([0-9]*\).*/\1/p' src/mixxxlib/db/schema.py)"
+case "$CEILING" in
+  '') echo "check-schema-upstream: could not extract SCHEMA_CEILING from src/mixxxlib/db/schema.py (empty match); refusing to compare against an unknown ceiling" >&2; exit 1 ;;
+  *[!0-9]*) echo "check-schema-upstream: SCHEMA_CEILING extraction produced non-numeric value '$CEILING'; refusing to compare against it" >&2; exit 1 ;;
+esac
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 curl -fsSL "$URL" -o "$TMP"

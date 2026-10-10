@@ -49,7 +49,8 @@ def show(ctx: typer.Context, track: Annotated[str, typer.Argument(metavar="TRACK
 def set_(ctx: typer.Context, track: Annotated[str, typer.Argument(metavar="TRACK")],
          assignments: Annotated[Optional[list[str]], typer.Argument(metavar="[FIELD=VALUE...]")] = None,
          clear: Annotated[Optional[list[str]], typer.Option(
-             "--clear", metavar="FIELD", help="Set NULL in the database and remove the file tag.")] = None,
+             "--clear", metavar="FIELD",
+             help="Set NULL in the database and remove the file tag (key clears to '' / key_id 0 instead).")] = None,
          mixxx_only: Annotated[bool, typer.Option("--mixxx-only", help="Write only the database.")] = False,
          file_only: Annotated[bool, typer.Option("--file-only", help="Write only the audio file.")] = False,
          paths: PathsOption = False, yes: YesOption = False, dry_run: DryRunOption = False) -> None:
