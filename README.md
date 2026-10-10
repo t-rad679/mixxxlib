@@ -66,11 +66,13 @@ python3 -m venv .venv
 ## Commands
 
 Global options, accepted before or after the subcommand: `--settings-path DIR`, `--db FILE`,
-`--backup-dir DIR`, `--json`. Most commands that write to the database or a file add `--dry-run`;
-the ones flagged destructive (`crate delete`/`remove`/`set-tracks`, `cue delete`/`clear`,
-`track set` when it would write a file-backed field, `backup restore`) also require `--yes`.
-`backup create` and `backup prune` take neither — creating a backup is never destructive, and
-prune only ever removes backups past the retention rule.
+`--backup-dir DIR`, `--json`. Most commands that write to the database or a file add `--dry-run`:
+every `crate` subcommand that mutates, every `cue` subcommand that mutates, and `track set`. Of
+those, the ones flagged destructive also require `--yes`: `crate delete`/`remove`/`set-tracks`,
+`cue delete`/`clear`, and `track set` when it would write the audio file (a file-backed field
+without `--mixxx-only`). `backup restore` is the one exception to the pattern: it requires
+`--yes` but has no `--dry-run` at all. `backup create` and `backup prune` take neither — creating
+a backup is never destructive, and prune only ever removes backups past the retention rule.
 
 ```sh
 mixxxlib info                                   # paths, schema verdict, Mixxx running?, backups
@@ -191,6 +193,28 @@ findings = lib.doctor()
 ```
 
 Errors are `mixxxlib.errors` subclasses with `.code`, `.exit_code` and `.details`.
+
+## File structure
+
+```
+src/mixxxlib/
+  cli/        Typer commands: backup, crate, cue, doctor, info, settings, track; common.py holds
+              shared selector/confirmation/output helpers.
+  db/         All SQL: connection (mutation plan + backup wiring), schema (revisions and
+              capabilities), crates, cues, tracks.
+  tags/       Audio-file tag reads/writes (files.py).
+  blobs/      Mixxx's beats/keys analysis blob decoder (beats.py); read-only.
+  safety/     The Mixxx-is-closed guard (guard.py) and the backup/retention/restore logic (backup.py).
+  doctor.py, errors.py, library.py, model.py, output.py, paths.py, settings.py
+              Doctor checks, the exit-code error hierarchy, the Library façade, frozen value
+              types, text/JSON rendering, path resolution, mixxx.cfg parsing.
+tests/
+  unit/         Pure-function tests: no sandbox, no I/O beyond fixtures already on disk.
+  integration/  CLI- and Library-level tests against a materialised copy of the fixtures.
+  fixtures/     The committed Mixxx 2.5.6 database, audio, mixxx.cfg and manifests (see below).
+scripts/
+  build-zipapp.sh, check-schema-upstream.sh, sandbox-mixxx.sh, make-fixture.py
+```
 
 ## Tests and the live harness
 
