@@ -18,8 +18,8 @@ import typer
 # `TyperException` subclasses (verified) and are handled separately below.
 from mixxxlib import __version__
 from mixxxlib.cli import (
-    backup as backup_cmd, crate as crate_cmd, doctor as doctor_cmd, info as info_cmd, settings as settings_cmd,
-    track as track_cmd,
+    backup as backup_cmd, crate as crate_cmd, cue as cue_cmd, doctor as doctor_cmd, info as info_cmd,
+    settings as settings_cmd, track as track_cmd,
 )
 from mixxxlib.cli.common import Globals, emit_error
 from mixxxlib.errors import InternalError, UsageError
@@ -58,6 +58,7 @@ app.add_typer(settings_cmd.app, name="settings")
 app.add_typer(track_cmd.app, name="track")
 app.add_typer(crate_cmd.app, name="crate")
 app.add_typer(backup_cmd.app, name="backup")
+app.add_typer(cue_cmd.app, name="cue")
 
 
 def main(argv: list[str] | None = None) -> int:

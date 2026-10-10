@@ -39,8 +39,9 @@ def show(ctx: typer.Context, track: Annotated[str, typer.Argument(metavar="TRACK
     with command(ctx, "track show") as out:
         lib = open_library(ctx)
         obj, decode_warnings = resolve_track(lib, track, paths=paths)
-        data = {"track": obj, "beatgrid": obj.analysis.beatgrid, "cues": []}
-        out.emit(data, warnings=[*lib.read_warnings(), *decode_warnings], text=lambda: output.render_track(obj))
+        data = {"track": obj, "beatgrid": obj.analysis.beatgrid, "cues": lib.cues.list(obj)}
+        out.emit(data, warnings=[*lib.read_warnings(), *decode_warnings],
+                 text=lambda: output.render_track(obj) + "\n\n" + output.render_cues(data["cues"]))
 
 
 @app.command("set")

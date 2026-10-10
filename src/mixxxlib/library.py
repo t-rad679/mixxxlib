@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Any
 
 from mixxxlib import __version__, doctor as doctor_mod, paths as paths_mod
-from mixxxlib.db import connection as conn_mod, crates as crates_sql, schema as schema_mod, tracks as tracks_sql
+from mixxxlib.db import connection as conn_mod, crates as crates_sql, cues as cues_sql, schema as schema_mod, tracks as tracks_sql
 from mixxxlib.errors import DatabaseError, NotFoundError, SchemaUnsupportedError, ValidationError
-from mixxxlib.model import BackupEntry, Crate, CrateNode, Finding, MutationResult, SchemaInfo, Track, WarningMessage
+from mixxxlib.model import BackupEntry, Crate, CrateNode, Cue, Finding, MutationResult, SchemaInfo, Track, WarningMessage
 from mixxxlib.safety import backup as backup_mod
 from mixxxlib.safety.guard import assert_mixxx_closed, mixxx_process_running
 from mixxxlib.settings import load_mixxx_cfg
@@ -33,6 +33,7 @@ class Library:
         self.crates = CratesAPI(self)
         self.tracks = TracksAPI(self)
         self.backups = BackupsAPI(self)
+        self.cues = CuesAPI(self)
 
     @classmethod
     def open(cls, settings_path: str | None = None, db: str | None = None, backup_dir: str | None = None, *,
@@ -230,6 +231,44 @@ class TracksAPI:
         backup_dir = self._lib.paths.backup_dir
         return self._lib.mutate("track set", lambda c: tracks_sql.plan_set(
             c, track, changes, clears, write_file=file, write_db=db, backup_dir=backup_dir), dry_run=dry_run)
+
+
+class CuesAPI:
+    def __init__(self, lib: Library) -> None:
+        self._lib = lib
+
+    def list(self, track: Track, *, type: str | None = None) -> list[Cue]:
+        type_id = cues_sql.parse_cue_type(type)[1] if type is not None else None
+        with self._lib.read() as conn:
+            return cues_sql.list_cues(conn, track, type_id=type_id)
+
+    def get(self, cue_id: int) -> tuple[Cue, Track]:
+        with self._lib.read() as conn:
+            row = cues_sql.get_cue_row(conn, int(cue_id))
+            # get_track returns (Track, list[WarningMessage]); the warnings are beatgrid-decode
+            # warnings, unrelated to the cue being fetched here (`cue set`/`cue delete` do not
+            # touch the beatgrid), so they are intentionally dropped rather than surfaced — see
+            # the task-18 report for the full reasoning.
+            track, _ = tracks_sql.get_track(conn, row["track_id"], has_tuning=self._lib.tracks._has_tuning(conn))
+            return cues_sql.row_to_cue(row, track.samples_per_second), track
+
+    def add(self, track: Track, type: str, position_samples: float, color: int, *, slot: int | None = None,
+            length: float = 0.0, label: str = "", dry_run: bool = False) -> MutationResult:
+        type_name, _ = cues_sql.parse_cue_type(type)
+        return self._lib.mutate("cue add", lambda c: cues_sql.plan_add(
+            c, track, type_name=type_name, position=position_samples, length=length, slot=slot, color=color, label=label), dry_run=dry_run)
+
+    def set(self, cue: Cue, track: Track, *, position_samples: float | None = None, length_samples: float | None = None,
+            slot: int | None = None, label: str | None = None, color: int | None = None, dry_run: bool = False) -> MutationResult:
+        return self._lib.mutate("cue set", lambda c: cues_sql.plan_set(
+            c, cue, track, position=position_samples, length=length_samples, slot=slot, label=label, color=color), dry_run=dry_run)
+
+    def delete(self, cue: Cue, *, dry_run: bool = False) -> MutationResult:
+        return self._lib.mutate("cue delete", lambda c: cues_sql.plan_delete(c, cue), dry_run=dry_run)
+
+    def clear(self, track: Track, *, type: str | None = None, dry_run: bool = False) -> MutationResult:
+        type_name = cues_sql.parse_cue_type(type)[0] if type is not None else None
+        return self._lib.mutate("cue clear", lambda c: cues_sql.plan_clear(c, track, type_name=type_name), dry_run=dry_run)
 
 
 class BackupsAPI:
