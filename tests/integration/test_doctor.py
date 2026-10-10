@@ -1,6 +1,7 @@
 import sqlite3
+from pathlib import Path
 
-from mixxxlib.doctor import summarize
+from mixxxlib.doctor import DoctorContext, check_crates, summarize
 
 
 def by_check(findings, name):
@@ -59,6 +60,34 @@ def test_duplicate_sibling_names_are_a_warning_at_42(sandbox_42, manifest_42):
     crates = by_check(findings, "crates")
     assert len(crates) == 1 and crates[0].details["duplicates"] == [{"name": "Dupe", "parent_id": None, "count": 2}]
     assert summarize(findings)["errors"] == 0
+
+
+def test_check_crates_orders_duplicate_groups_by_name_then_parent():
+    """Final-review item 6: check_crates ordered its duplicate-name groups by name only, not also
+    parent_id, so two duplicate-name groups sharing a name under different parents could come
+    back in either relative order between runs. This can't be reproduced through the real
+    schema-42 fixture (its crates table enforces UNIQUE(parent_id, name), which makes two
+    non-null-parent siblings sharing a name impossible to insert at all -- exactly the kind of
+    corruption, e.g. a pre-sibling_unique_rebuild schema-41 database, doctor exists to catch
+    regardless of how it got there), so build a minimal crates table without that constraint and
+    call check_crates directly."""
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE crates (id INTEGER PRIMARY KEY, name TEXT, parent_id INTEGER)")
+    conn.executemany("INSERT INTO crates (name, parent_id) VALUES (?, ?)", [
+        ("Zeta", None), ("Zeta", None),  # duplicate pair at the root
+        ("Zeta", 1), ("Zeta", 1),        # a second duplicate pair, same name, a different parent
+        ("Alpha", 2), ("Alpha", 2),      # a differently-named group, to confirm name still sorts first
+    ])
+    conn.commit()
+    ctx = DoctorContext(conn=conn, schema=None, backup_dir=Path("/nonexistent"), process_check=lambda: False, nested=True)
+    findings = check_crates(ctx)
+    assert len(findings) == 1
+    assert findings[0].details["duplicates"] == [
+        {"name": "Alpha", "parent_id": 2, "count": 2},
+        {"name": "Zeta", "parent_id": None, "count": 2},
+        {"name": "Zeta", "parent_id": 1, "count": 2},
+    ]
 
 
 def test_cycle_is_an_error_at_42(sandbox_42, manifest_42):

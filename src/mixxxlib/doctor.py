@@ -112,7 +112,9 @@ def check_orphans(ctx: DoctorContext) -> list[Finding]:
 
 def check_crates(ctx: DoctorContext) -> list[Finding]:
     parent = "parent_id" if ctx.nested else "NULL"
-    rows = ctx.conn.execute(f"SELECT name, {parent} AS parent_id, count(*) AS n FROM crates GROUP BY name, {parent} HAVING n > 1 ORDER BY name").fetchall()
+    rows = ctx.conn.execute(
+        f"SELECT name, {parent} AS parent_id, count(*) AS n FROM crates GROUP BY name, {parent} "
+        f"HAVING n > 1 ORDER BY name, {parent}").fetchall()
     if not rows:
         return []
     duplicates = [{"name": r["name"], "parent_id": r["parent_id"], "count": r["n"]} for r in rows]
