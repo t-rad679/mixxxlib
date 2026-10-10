@@ -151,3 +151,24 @@ def test_yes_checked_after_selector_resolves_and_dry_run_skips_it(sandbox):
     r = sandbox.run("crate", "delete", "Empty Crate", "--dry-run", "--json")
     assert r.code == 0 and r.json["mutation"]["dry_run"] is True
     assert sandbox.scalar("SELECT count(*) FROM crates WHERE name = 'Empty Crate'") == 1
+
+
+def test_id_and_parent_together_are_rejected(sandbox_42, manifest_42):
+    """Final-review item 2: resolve_crate used to accept --id and --parent together and silently
+    drop --parent, so a destructive command like `crate delete --id N --parent X --yes` could
+    delete a crate unrelated to the parent the caller thought scoped the operation."""
+    bass_id = manifest_42["crates"]["bass"]
+    for args in (
+        ("show", str(bass_id), "--id", "--parent", "Genres"),
+        ("delete", str(bass_id), "--id", "--parent", "Genres", "--yes"),
+        ("rename", str(bass_id), "Renamed", "--id", "--parent", "Genres"),
+        ("set-tracks", str(bass_id), "--id", "--parent", "Genres", "--yes"),
+    ):
+        r = sandbox_42.run("crate", *args, "--json")
+        assert r.code == 4, (args, r.stdout, r.stderr)
+        assert r.error["error"]["code"] == "validation"
+        assert "--id" in r.error["error"]["message"] and "--parent" in r.error["error"]["message"]
+    # crate move has its own, unrelated --parent (the move target) and is correctly unaffected --
+    # it passes parent=None to resolve_crate for the *selector* itself.
+    r = sandbox_42.run("crate", "move", str(bass_id), "--id", "--root", "--json")
+    assert r.code == 0

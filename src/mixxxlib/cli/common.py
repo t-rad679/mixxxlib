@@ -163,6 +163,13 @@ def parse_int(value: str, what: str) -> int:
 
 
 def resolve_crate(lib: Library, selector: str, *, by_id: bool, parent: str | None) -> Crate:
+    # --id names a crate uniquely; --parent only disambiguates a name lookup. Together they are
+    # nonsensical, and, unguarded, --parent used to be resolved (itself able to raise/cost a
+    # lookup) and then silently discarded for --id -- a real hazard on the destructive
+    # subcommands (delete/remove/set-tracks/...) that share this helper. Same treatment and exit
+    # code as the --mixxx-only/--file-only pair in `track set`.
+    if by_id and parent:
+        raise ValidationError("--id and --parent exclude each other")
     parent_crate = lib.crates.get(parent) if parent else None
     if by_id:
         return lib.crates.get(parse_int(selector, "crate id"), by_id=True)
