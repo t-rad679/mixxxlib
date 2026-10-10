@@ -113,6 +113,24 @@ def test_nested_commands_need_schema_41(sandbox):
     assert all(node.children == () for node in roots) and len(roots) == len(lib.crates.list())
 
 
+def test_roots_only_on_a_flat_schema_matches_the_unfiltered_list_in_either_direction(sandbox):
+    """Final-review item 7: nothing covered CratesAPI.list(roots_only=True) against a flat
+    schema, in either direction. On a flat schema parent_id is always NULL by construction (the
+    crates table doesn't even have the column, per _select(nested=False)), so "every crate is a
+    root" is trivially true and asserting only `all(... parent_id is None ...)` would pass even
+    if roots_only silently filtered something out (or in) that it shouldn't -- the genuinely
+    discriminating check is that roots_only=True returns exactly the same set as roots_only=False,
+    both matching the table's own row count."""
+    lib = sandbox.library()
+    assert lib.nested is False
+    total = sandbox.scalar("SELECT count(*) FROM crates")
+    roots = lib.crates.list(roots_only=True)
+    everything = lib.crates.list(roots_only=False)
+    assert len(roots) == len(everything) == total > 0
+    assert {c.id for c in roots} == {c.id for c in everything}
+    assert all(c.parent_id is None for c in roots)
+
+
 def test_nested_tree_lookup_and_sibling_uniqueness(sandbox_42, manifest_42):
     lib = sandbox_42.library()
     assert lib.nested and lib.schema.version == 42
