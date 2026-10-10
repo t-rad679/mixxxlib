@@ -219,6 +219,18 @@ class TracksAPI:
         with self._lib.read() as conn:
             return tracks_sql.resolve_track_ids(conn, selectors, paths=paths, missing_error=missing_error)
 
+    def set(self, track: Track, fields: dict[str, str], *, clear: Iterable[str] = (), file: bool = True,
+            db: bool = True, dry_run: bool = False) -> MutationResult:
+        """Write to the audio file (if `file`) and the database (if `db`). `file=False` is
+        `--mixxx-only`; `db=False` is `--file-only`."""
+        if not file and not db:
+            raise ValidationError("--mixxx-only and --file-only exclude each other")
+        changes = {name: tracks_sql.coerce_field(name, raw) for name, raw in fields.items()}
+        clears = set(clear)
+        backup_dir = self._lib.paths.backup_dir
+        return self._lib.mutate("track set", lambda c: tracks_sql.plan_set(
+            c, track, changes, clears, write_file=file, write_db=db, backup_dir=backup_dir), dry_run=dry_run)
+
 
 class BackupsAPI:
     def __init__(self, lib: Library) -> None:

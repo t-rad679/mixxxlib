@@ -5,12 +5,16 @@ from __future__ import annotations
 import os
 import sqlite3
 from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
 
 from mixxxlib.blobs import beats
+from mixxxlib.db.connection import Deferred, MutationPlan, Statement
 from mixxxlib.errors import MixxxlibError, NotFoundError, ValidationError
 from mixxxlib.model import (
-    Analysis, Audio, Bookkeeping, CoverArt, Location, Metadata, MusicalKey, Track, WarningMessage,
+    Analysis, Audio, Bookkeeping, CoverArt, Location, Metadata, MusicalKey, Track, WarningMessage, parse_color,
 )
+from mixxxlib.tags.files import TagWriteAction
 
 # field name → library column. `key` also writes key_id (never independently).
 WRITABLE_FIELDS: dict[str, str] = {
@@ -162,3 +166,141 @@ def resolve_track_ids(conn: sqlite3.Connection, selectors: Iterable[str], *, pat
     if unknown:
         raise missing_error(f"{len(unknown)} path(s) are not in the library: {unknown[:5]}", paths=unknown)
     return ids
+
+
+# ---------------------------------------------------------------- track set (spec §7.4)
+
+_TRUE = {"1", "true", "yes", "on"}
+_FALSE = {"0", "false", "no", "off"}
+
+
+def coerce_field(name: str, raw: str) -> Any:
+    """Type/range validation only (spec constraint 7). Returns the database value."""
+    if name not in WRITABLE_FIELDS:
+        raise ValidationError(f"unknown field {name!r}", field=name, fields=sorted(WRITABLE_FIELDS))
+    if name == "rating":
+        value = _coerce_int(raw, name)
+        if not 0 <= value <= 5:
+            raise ValidationError(f"rating must be 0..5, got {value}", field=name, value=raw)
+        return value
+    if name == "color":
+        return parse_color(raw, allow_zero=True)
+    if name == "bpm":
+        try:
+            value = float(raw)
+        except ValueError:
+            raise ValidationError(f"bpm must be a number, got {raw!r}", field=name, value=raw) from None
+        if value < 0:
+            raise ValidationError(f"bpm must be >= 0, got {value}", field=name, value=raw)
+        return value
+    if name == "bpm_lock":
+        lowered = raw.strip().lower()
+        if lowered in _TRUE:
+            return 1
+        if lowered in _FALSE:
+            return 0
+        raise ValidationError(f"bpm_lock must be true/false, got {raw!r}", field=name, value=raw)
+    if name == "key":
+        return MusicalKey.parse(raw)
+    return str(raw)
+
+
+def _coerce_int(raw: str, name: str) -> int:
+    try:
+        return int(raw)
+    except ValueError:
+        raise ValidationError(f"{name} must be an integer, got {raw!r}", field=name, value=raw) from None
+
+
+def file_tag_value(name: str, value: Any) -> str | None:
+    """The string mutagen should write for a coerced database value; None removes the tag."""
+    if value is None:
+        return None
+    if name == "key":
+        return value.text or None
+    if name == "bpm":
+        return format(value, "g")
+    return str(value)
+
+
+def update_sql(columns: list[str]) -> str:
+    assignments = ", ".join(f"{column} = ?" for column in columns)
+    return f"UPDATE library SET {assignments} WHERE id = ?"
+
+
+def plan_set(conn: sqlite3.Connection, track: Track, changes: dict[str, Any], clears: set[str], *,
+             write_file: bool, write_db: bool, backup_dir: Path) -> MutationPlan:
+    """Build the §7.4 plan: file action (if any file-backed field is in scope) then one UPDATE."""
+    overlap = set(changes) & clears
+    if overlap:
+        raise ValidationError(f"fields both set and cleared: {sorted(overlap)}", fields=sorted(overlap))
+    for name in clears:
+        if name not in WRITABLE_FIELDS:
+            raise ValidationError(f"unknown field {name!r}", field=name, fields=sorted(WRITABLE_FIELDS))
+    if not changes and not clears:
+        raise ValidationError("nothing to set: pass FIELD=VALUE or --clear FIELD")
+
+    new_values: dict[str, Any] = {**changes, **{name: None for name in clears}}
+    if "key" in clears:
+        # Decision 3: `--clear key` writes key='' and key_id=0 (Mixxx's own defaults), not NULL —
+        # key_id is never set independently of key, and key's own default is ''. Every other
+        # `--clear` writes NULL.
+        new_values["key"] = MusicalKey(0, "")
+
+    touched = set(new_values)
+    file_fields = touched & FILE_BACKED_FIELDS
+    db_only_fields = touched - FILE_BACKED_FIELDS
+
+    warnings: list[WarningMessage] = []
+    if touched & BLOB_AUTHORITATIVE_FIELDS:
+        warnings.append(WarningMessage("blob_authoritative",
+                                       "bpm/key were written, but the beats/keys blob is authoritative and Mixxx may discard the change",
+                                       {"fields": sorted(touched & BLOB_AUTHORITATIVE_FIELDS)}))
+    if not write_file and file_fields:
+        warnings.append(WarningMessage("file_backed",
+                                       "these fields are re-imported from the audio file; the file's value wins the next time Mixxx re-reads it",
+                                       {"fields": sorted(file_fields)}))
+    if write_file and db_only_fields:
+        warnings.append(WarningMessage("no_file_tag", "these fields have no audio-file counterpart; only the database changed",
+                                       {"fields": sorted(db_only_fields)}))
+
+    old_values = {name: getattr(track.metadata, name) for name in touched}
+    changed = {name: {"old": old_values[name], "new": new_values[name]} for name in sorted(touched)}
+
+    if write_file and file_fields and not track.location.path:
+        raise ValidationError("track has no file location to write tags to", track_id=track.id)
+    file_written = bool(write_file and file_fields and track.location.path)
+
+    file_actions: list[TagWriteAction] = []
+    if file_written:
+        tag_values = {name: file_tag_value(name, new_values[name]) for name in sorted(file_fields)}
+        file_actions.append(TagWriteAction(track.location.path, track.id, tag_values, backup_dir))
+
+    statements: list[Statement] = []
+    if write_db:
+        columns: list[str] = []
+        params: list[Any] = []
+        for name in sorted(touched):
+            value = new_values[name]
+            if name == "key":
+                columns += ["key", "key_id"]
+                params += [value.text, value.id]
+            else:
+                columns.append(WRITABLE_FIELDS[name])
+                params.append(value)
+        sql = update_sql(columns)
+        if file_written:
+            # Spliced onto whatever `update_sql` returned, rather than folded into `columns`, so the
+            # placeholder count this produces always matches `params`'s length even if `update_sql`
+            # is swapped out (e.g. by a test) for something that ignores its `columns` argument.
+            sql = sql[: -len(" WHERE id = ?")] + ", source_synchronized_ms = ? WHERE id = ?"
+            params.append(Deferred("mtime_ms"))
+        statements.append(Statement(sql, (*params, track.id)))
+
+    def after_commit(c: sqlite3.Connection) -> dict[str, Any]:
+        has_tuning = any(row[1] == "tuning_frequency_hz" for row in c.execute("PRAGMA table_info(library)"))
+        fresh, _ = get_track(c, track.id, has_tuning=has_tuning)
+        return {"track": fresh, "changed": changed, "file_written": file_written}
+
+    return MutationPlan(statements=statements, data={"track": track, "changed": changed, "file_written": file_written},
+                        warnings=warnings, file_actions=file_actions, after_commit=after_commit if write_db else None)
